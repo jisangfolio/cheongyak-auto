@@ -32,22 +32,21 @@ def _cheong_cfg(config):
 
 
 def _my_gajeom(config):
-    """config 값으로 청약가점 총점 계산. 실패 시 None."""
+    """청약가점 총점 계산(만 30세 규칙 반영). 실패 시 None."""
     try:
-        from .gajeom import calc_gajeom
-        c = _cheong_cfg(config)
-        return calc_gajeom(
-            c.get("무주택기간", 0), c.get("부양가족", 0), c.get("청약통장기간", 0)
-        )["total"]
+        from . import eligibility
+        return eligibility.gajeom(_cheong_cfg(config))["total"]
     except Exception:  # noqa: BLE001
         return None
 
 
 def _brief_profile(config):
-    """브리핑용 사용자 프로필(청약가점 포함)."""
+    """브리핑용 사용자 프로필(무주택 산정기간·청약가점 포함)."""
+    from . import eligibility
     c = _cheong_cfg(config)
+    nh = eligibility.no_house_counted_years(c)
     profile = {
-        "무주택기간": c.get("무주택기간"),
+        "무주택기간": (f"{nh}년(가점 산정)" if nh is not None else c.get("무주택")),
         "부양가족": c.get("부양가족"),
         "청약통장기간": c.get("청약통장기간"),
         "희망지역": c.get("희망지역"),
@@ -117,15 +116,27 @@ def cmd_sync_db(config, args):  # noqa: ARG001
 
 
 def cmd_gajeom(config, args):  # noqa: ARG001
-    from .gajeom import calc_gajeom
+    from . import eligibility
     c = _cheong_cfg(config)
-    r = calc_gajeom(c.get("무주택기간", 0), c.get("부양가족", 0), c.get("청약통장기간", 0))
+    nh = eligibility.no_house_counted_years(c)
+    r = eligibility.gajeom(c)
     b, d = r["breakdown"], r.get("detail", {})
-    print(f"청약가점: {r['total']} / {r['max']}점")
+    print(f"청약가점: {r['total']} / {r['max']}점   (무주택 산정기간 {nh}년)")
     print(f"  · 무주택기간   {b['no_house']:>2}점  {d.get('no_house', '')}")
     print(f"  · 부양가족수   {b['dependents']:>2}점  {d.get('dependents', '')}")
     print(f"  · 통장가입기간 {b['account']:>2}점  {d.get('account', '')}")
-    print("※ 무주택기간·부양가족·통장기간은 config.yaml 의 '청약' 항목에서 수정")
+    if nh == 0.0:
+        print("※ 만 30세 미만 미혼이면 무주택 가점은 0으로 산정됩니다(평생 무주택이어도).")
+    print("※ 값 수정: config.yaml 의 '청약' 항목")
+
+
+def cmd_eligibility(config, args):
+    from . import eligibility
+    pno = getattr(args, "pno", None)
+    record = _find_notice(pno) if pno else None
+    if pno and not record:
+        print(f"[eligibility] DB에 공고번호 {pno} 없음 → 프로필 기준 일반 결과로 출력.\n")
+    print(eligibility.summarize(eligibility.check_eligibility(_cheong_cfg(config), record)))
 
 
 def cmd_brief(config, args):
@@ -187,6 +198,8 @@ def main():
     sub.add_parser("apt-watch", help="청약홈 공고 확인 → 새 공고/임박 알림 + DB 반영")
     sub.add_parser("sync-db", help="관심지역 공고 전체를 DB에 적재(+seen 이관)")
     sub.add_parser("gajeom", help="청약가점 계산(config '청약' 값 사용)")
+    pe = sub.add_parser("eligibility", help="청약 자격 사전체크(선택: 공고번호)")
+    pe.add_argument("pno", nargs="?")
     pb = sub.add_parser("brief", help="LLM 공고 브리핑(공고번호)")
     pb.add_argument("pno")
     pp = sub.add_parser("predict", help="당첨 가능성 휴리스틱 추정(공고번호)")
@@ -207,6 +220,7 @@ def main():
         "apt-watch": cmd_apt_watch,
         "sync-db": cmd_sync_db,
         "gajeom": cmd_gajeom,
+        "eligibility": cmd_eligibility,
         "brief": cmd_brief,
         "predict": cmd_predict,
         "test-notify": cmd_test_notify,
