@@ -82,9 +82,40 @@ def _find_notice(pno):
 
 
 # ---------- 명령 ----------
+def _apt_body(config, new_notices, upcoming):
+    """지원가치 필터를 적용해 이메일 본문 생성. (본문, 유지건수, 제외건수) 반환."""
+    from .applyhome import _fmt
+    from . import applicability as ap
+    profile = _cheong_cfg(config)
+    excluded, out = [], []
+
+    def _section(title_fmt, recs):
+        kept = []
+        for r in recs:
+            v = ap.applicability(r, profile)
+            if not v["worth"]:
+                excluded.append(f"· {str(r.get('name', ''))[:34]} — {v['reason']}")
+                continue
+            block = _fmt(r).rstrip() + "\n · " + ap.one_liner(r, profile)
+            if v.get("note"):
+                block += "\n · ▸ " + v["note"]
+            kept.append(block)
+        if kept:
+            out.append(title_fmt.format(n=len(kept)))
+            out.append("")
+            out.append("\n\n".join(kept))
+        return len(kept)
+
+    n = _section("🆕 새 청약 공고 {n}건 (지원가치 필터 통과)", new_notices)
+    n += _section("\n⏰ 청약 접수 임박 {n}건", upcoming)
+    if excluded:
+        out.append("\n── 지원 불가로 제외 ──")
+        out.append("\n".join(excluded))
+    return "\n".join(out).strip(), n, len(excluded)
+
+
 def cmd_apt_watch(config, args):  # noqa: ARG001
     new_notices, upcoming, first_run = find_matches(config)
-    # DB 에도 반영(대시보드/브리핑/예측이 읽음). 실패해도 알림 흐름은 유지.
     try:
         from . import db
         db.init_db()
@@ -95,15 +126,38 @@ def cmd_apt_watch(config, args):  # noqa: ARG001
     if first_run:
         print("[apt] 최초 실행 — 현재 관심지역 공고를 기준선으로 저장했습니다. "
               "다음부터 '새 공고'만 알립니다.")
-        if upcoming:
-            notify(config, "⏰ 청약 접수 임박", format_report([], upcoming))
+        body, kept, _ = _apt_body(config, [], upcoming)
+        if kept:
+            notify(config, "⏰ 청약 접수 임박", body)
         return
     if not new_notices and not upcoming:
         print("[apt] 새 공고/임박 건 없음.")
         return
-    body = format_report(new_notices, upcoming)
-    title = f"🏠 청약 알림 (새 {len(new_notices)} · 임박 {len(upcoming)})"
+    body, kept, excl = _apt_body(config, new_notices, upcoming)
+    if not kept:
+        print(f"[apt] 새/임박 공고는 있으나 지원가치 있는 건 없음(구조적 제외 {excl}건).")
+        return
+    title = f"🏠 청약 알림 (지원가치 {kept}건" + (f" · 제외 {excl}" if excl else "") + ")"
     notify(config, title, body)
+
+
+def cmd_match(config, args):  # noqa: ARG001
+    from . import applicability as ap, db
+    profile = _cheong_cfg(config)
+    regions = config.get("applyhome", {}).get("regions")
+    active = db.get_notices(regions=regions, active_only=True)
+    yes, no = [], []
+    for r in active:
+        (yes if ap.applicability(r, profile)["worth"] else no).append(r)
+    print(f"활성 공고 {len(active)}건 → 지원가치 {len(yes)}건 / 구조적 제외 {len(no)}건\n")
+    for r in yes:
+        v = ap.applicability(r, profile)
+        print(f"✅ [{r.get('type', '')}] {str(r.get('name', ''))[:36]}  ({r.get('area', '')})")
+        print(f"     {' / '.join(v['paths'])}")
+    if no:
+        print("\n── 구조적 제외(지원 경로 없음) ──")
+        for r in no:
+            print(f"⛔ {str(r.get('name', ''))[:36]} — {ap.applicability(r, profile)['reason']}")
 
 
 def cmd_sync_db(config, args):  # noqa: ARG001
@@ -198,6 +252,7 @@ def main():
     sub.add_parser("apt-watch", help="청약홈 공고 확인 → 새 공고/임박 알림 + DB 반영")
     sub.add_parser("sync-db", help="관심지역 공고 전체를 DB에 적재(+seen 이관)")
     sub.add_parser("gajeom", help="청약가점 계산(config '청약' 값 사용)")
+    sub.add_parser("match", help="활성 공고별 '지원 가치' 필터(구조적 불가 제외)")
     pe = sub.add_parser("eligibility", help="청약 자격 사전체크(선택: 공고번호)")
     pe.add_argument("pno", nargs="?")
     pb = sub.add_parser("brief", help="LLM 공고 브리핑(공고번호)")
@@ -220,6 +275,7 @@ def main():
         "apt-watch": cmd_apt_watch,
         "sync-db": cmd_sync_db,
         "gajeom": cmd_gajeom,
+        "match": cmd_match,
         "eligibility": cmd_eligibility,
         "brief": cmd_brief,
         "predict": cmd_predict,

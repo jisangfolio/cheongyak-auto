@@ -48,6 +48,7 @@ python3 -m cheong.main test-notify        # 알림 설정 점검
 python3 -m cheong.main apt-watch          # 청약홈 확인 → 새 공고/임박 알림 + DB 반영
 python3 -m cheong.main sync-db            # 관심지역 공고 전체를 DB에 적재(+seen 이관)
 python3 -m cheong.main gajeom             # 청약가점 계산(만30세 규칙 반영)
+python3 -m cheong.main match              # 활성 공고별 '지원 가치' 필터(구조적 불가 제외)
 python3 -m cheong.main eligibility [공고번호]  # 자격 사전체크(특별공급 유형별, 참고용)
 python3 -m cheong.main brief <공고번호>    # LLM 공고 브리핑(키 없으면 템플릿 요약)
 python3 -m cheong.main predict <공고번호>  # 당첨 가능성 휴리스틱 추정
