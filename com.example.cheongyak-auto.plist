@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd 예시. 아래 두 경로를 본인 환경에 맞게 수정한 뒤
+     ~/Library/LaunchAgents/ 로 복사해서 사용하세요.
+       1) python 실행파일 경로 (which python3 로 확인)
+       2) 프로젝트 절대경로 (WorkingDirectory / 로그 경로) -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.cheongyak-auto</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/your/python3</string>
+        <string>-m</string>
+        <string>cheong.main</string>
+        <string>apt-watch</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/cheongyak-auto</string>
+
+    <!-- 매일 오전 9시 1회 실행 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>9</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/path/to/cheongyak-auto/apt-watch.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/cheongyak-auto/apt-watch.log</string>
+</dict>
+</plist>

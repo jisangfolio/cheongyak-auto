@@ -1,0 +1,17 @@
+# 비밀/개인정보 (절대 커밋 금지)
+# config.yaml: API 키·Gmail 앱비밀번호 포함
+config.yaml
+# apt-watch.log: 실행 로그(이메일 주소 포함)
+apt-watch.log
+*.log
+# 런타임 상태(기준선)
+.seen_pblanc.json
+# 개인 경로 박힌 실제 설치 파일
+com.jjpark.*.plist
+
+# 파이썬 / OS
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,72 @@
+# ===========================================================
+#  이 파일을 config.yaml 로 복사한 뒤 값을 채우세요.
+#  config.yaml 은 개인정보/비밀번호 포함 → git 에 올라가지 않음(.gitignore)
+# ===========================================================
+
+# 감시 주기(초). watch 명령의 --interval 로 덮어쓸 수 있음
+poll_interval_seconds: 60
+
+# --- 폼에 자동 입력할 개인정보 (steps 에서 value_from: profile.xxx 로 참조) ---
+profile:
+  name: "홍길동"
+  phone: "010-1234-5678"
+  email: "you@example.com"
+  birth: "1996-01-01"
+  address: "서울시 ..."
+
+# --- 알림 설정 ---
+notify:
+  desktop: true          # macOS 알림 센터 팝업
+  email:
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    username: "you@gmail.com"
+    # ⚠️ Gmail은 일반 비밀번호가 아니라 '앱 비밀번호'(16자리)를 발급받아 넣어야 함
+    #    구글 계정 → 보안 → 2단계 인증 → 앱 비밀번호
+    password: "abcd efgh ijkl mnop"
+    from_addr: "you@gmail.com"
+    to_addr: "you@gmail.com"   # 알림 받을 주소(본인)
+
+# --- 감시/자동입력 대상들 ---
+targets:
+  # 예시 1) 정적 페이지에서 '응모하기' 글자가 뜨면 오픈으로 판단 (가벼운 http 모드)
+  - name: "example-event"
+    url: "https://example.com/event"
+    open_detection:
+      mode: http
+      rule: keyword_present
+      value: "응모하기"
+    # 오픈 감지 후 폼 입력 단계
+    steps:
+      - {action: wait_for, selector: "form#apply"}
+      - {action: fill,  selector: "#name",  value_from: profile.name}
+      - {action: fill,  selector: "#phone", value_from: profile.phone}
+      - {action: fill,  selector: "#email", value_from: profile.email}
+      - {action: check, selector: "#agree_privacy"}
+    # 캡차/본인인증 감지되면 자동으로 사람에게 넘김
+    stop_on:
+      - "iframe[src*='recaptcha']"
+      - "text=본인인증"
+      - "text=인증서"
+      - "text=휴대폰 인증"
+    submit:
+      mode: manual          # manual = 최종 제출은 사람이 / auto = 자동 클릭(게이트 없을 때만)
+      selector: "button#submit"
+
+  # 예시 2) JS로 그려지는 페이지에서 버튼이 활성화되면 오픈 (playwright 모드)
+  - name: "example-spa"
+    url: "https://example.com/apply"
+    open_detection:
+      mode: playwright
+      rule: selector_enabled
+      value: "button.apply-btn"
+    steps:
+      - {action: fill,  selector: "input[name=name]",  value_from: profile.name}
+      - {action: fill,  selector: "input[name=phone]", value_from: profile.phone}
+      - {action: select, selector: "select[name=region]", value: "서울"}
+    stop_on:
+      - "iframe[title*='reCAPTCHA']"
+      - "text=본인인증"
+    submit:
+      mode: manual
+      selector: "button.apply-btn"
