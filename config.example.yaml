@@ -27,7 +27,31 @@ notify:
     from_addr: "you@gmail.com"
     to_addr: "you@gmail.com"   # 알림 받을 주소(본인)
 
-# --- 감시/자동입력 대상들 ---
+# ===== 아파트 청약(청약홈 공식 오픈API) 알리미 =====
+applyhome:
+  # data.go.kr → '한국부동산원_청약홈 분양정보 조회 서비스' 활용신청 후
+  # '일반 인증키(Decoding)' 를 붙여넣기
+  service_key: "여기에_API키_붙여넣기"
+  regions: ["서울", "경기"]     # 공급지역명 부분일치 (예: "서울", "경기", "인천")
+  house_types: []               # 비우면 전체 (예: ["민영","국민"])
+  remind_days_before: 3         # 청약접수 시작 N일 전부터 임박 알림
+  per_page: 500
+
+# ===== 청약가점 계산 입력값 (gajeom / brief / predict 명령이 사용) =====
+청약:
+  무주택기간: 0        # 년 (무주택 기간)
+  부양가족: 0          # 명
+  청약통장기간: 0      # 년 (청약통장 가입기간)
+  희망지역: "서울"
+
+# ===== LLM 공고 브리핑 (선택) =====
+# api_key 를 비워두면 ANTHROPIC_API_KEY 환경변수를 쓰고, 그것도 없으면 템플릿 요약으로 폴백
+briefing:
+  model: "claude-opus-4-8"
+  api_key: ""
+  max_tokens: 600
+
+# --- 감시/자동입력 대상들 (경품/응모용, 아파트 청약엔 미사용) ---
 targets:
   # 예시 1) 정적 페이지에서 '응모하기' 글자가 뜨면 오픈으로 판단 (가벼운 http 모드)
   - name: "example-event"

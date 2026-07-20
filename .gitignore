@@ -4,8 +4,9 @@ config.yaml
 # apt-watch.log: 실행 로그(이메일 주소 포함)
 apt-watch.log
 *.log
-# 런타임 상태(기준선)
+# 런타임 상태(기준선 · SQLite DB)
 .seen_pblanc.json
+data/
 # 개인 경로 박힌 실제 설치 파일
 com.jjpark.*.plist
 

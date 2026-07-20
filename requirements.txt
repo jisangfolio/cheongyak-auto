@@ -1,3 +1,12 @@
-playwright>=1.40
+# 핵심 (청약홈 알리미)
 pyyaml>=6.0
 requests>=2.31
+
+# 폼 자동입력(부가 기능)에만 필요
+playwright>=1.40
+
+# LLM 공고 브리핑(cheong/briefing.py) — 없으면 템플릿 요약으로 폴백
+anthropic>=0.40
+
+# 대시보드(dashboard/app.py)에만 필요
+streamlit>=1.30

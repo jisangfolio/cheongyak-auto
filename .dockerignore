@@ -1,0 +1,29 @@
+# 비밀/개인정보 (이미지에 절대 포함 금지 — 런타임 마운트/환경변수로 주입)
+config.yaml
+
+# 실행 로그(이메일 주소 등 개인정보 포함)
+*.log
+
+# 런타임 상태(기준선 — 컨테이너에서 새로 생성/마운트)
+.seen_pblanc.json
+
+# 런타임 데이터(DB·캐시 등 — 볼륨으로 주입)
+data/
+
+# 개인 경로가 박힌 실제 설치 파일
+com.jjpark.*.plist
+
+# 파이썬 / 가상환경 / 캐시
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# 버전관리 / 에디터 / OS 부산물
+.git/
+.gitignore
+.DS_Store
+
+# 문서(런타임 불필요)
+README.md
+LICENSE

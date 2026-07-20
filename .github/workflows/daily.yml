@@ -1,0 +1,128 @@
+# ===========================================================
+#  청약홈 APT 공고 알리미 — 매일 실행 스케줄러 (GitHub Actions)
+#
+#  맥(로컬 launchd/plist) 없이 GitHub 클라우드 러너에서 매일 1회 돌린다.
+#  - 새 공고 감지 + 접수 임박 리마인더를 이메일로 발송
+#  - 실제 청약 신청(인증서·자격판정)은 자동화 대상이 아님(사람이 직접)
+#
+#  ⚠️ 비밀값은 절대 이 파일에 하드코딩하지 않는다.
+#     GitHub 저장소 → Settings → Secrets and variables → Actions 에
+#     아래 5개 Secret 을 등록해야 한다:
+#       APPLYHOME_SERVICE_KEY, SMTP_USERNAME, SMTP_PASSWORD,
+#       NOTIFY_TO, ANTHROPIC_API_KEY
+# ===========================================================
+name: daily-apt-watch
+
+on:
+  # 매일 UTC 0시(=한국 시간 오전 9시)에 실행
+  schedule:
+    - cron: "0 0 * * *"
+  # Actions 탭에서 수동 실행도 가능
+  workflow_dispatch:
+
+# 러너에 최소 권한만 부여(코드 읽기 전용)
+permissions:
+  contents: read
+
+jobs:
+  apt-watch:
+    runs-on: ubuntu-latest
+    # 러너가 장시간 매달리지 않도록 방어적 상한
+    timeout-minutes: 15
+
+    # ---------------------------------------------------------
+    #  Secrets → 환경변수 매핑
+    #  (오케스트레이터가 config 로더에 os.environ 폴백을 추가할 예정.
+    #   그 전까지는 아래 '설정 파일 생성' 스텝에서 config.yaml 에 주입한다.)
+    # ---------------------------------------------------------
+    env:
+      APPLYHOME_SERVICE_KEY: ${{ secrets.APPLYHOME_SERVICE_KEY }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      # 1) 저장소 체크아웃
+      - name: 소스 체크아웃
+        uses: actions/checkout@v4
+
+      # 2) 파이썬 3.12 설치
+      - name: 파이썬 3.12 준비
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # 3) 의존성 설치
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 4) 설정 파일 생성
+      #    Actions 러너에는 config.yaml 이 없다(개인정보라 git 에 미포함).
+      #    config.example.yaml 을 config.yaml 로 복사한 뒤,
+      #    비밀값 자리표시자를 환경변수로 치환한다.
+      #    ── 향후 오케스트레이터가 config 로더에 os.environ 폴백을 넣으면
+      #       이 치환 스텝은 config.example.yaml 복사만으로 단순화할 수 있다.
+      - name: 설정 파일 생성(config.yaml)
+        env:
+          # 스텝 내부에서만 쓰는 셸 변수(위 job env 를 그대로 노출)
+          APPLYHOME_SERVICE_KEY: ${{ secrets.APPLYHOME_SERVICE_KEY }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
+        run: |
+          # 예시 설정을 실제 설정 파일로 복사(없으면 실패)
+          cp config.example.yaml config.yaml
+
+          # 파이썬으로 안전하게 치환(YAML 구조 유지, 특수문자 이스케이프 걱정 없음).
+          # 값은 stdin(here-doc)이 아닌 os.environ 으로만 읽어 로그 노출을 막는다.
+          python - <<'PY'
+          import os
+          import yaml
+
+          with open("config.yaml", encoding="utf-8") as f:
+              cfg = yaml.safe_load(f) or {}
+
+          # --- applyhome 서비스키 ---
+          ah = cfg.setdefault("applyhome", {})
+          key = os.environ.get("APPLYHOME_SERVICE_KEY")
+          if key:
+              ah["service_key"] = key
+
+          # --- 이메일 알림 ---
+          email = cfg.setdefault("notify", {}).setdefault("email", {})
+          user = os.environ.get("SMTP_USERNAME")
+          pw = os.environ.get("SMTP_PASSWORD")
+          to = os.environ.get("NOTIFY_TO")
+          if user:
+              email["username"] = user
+              email["from_addr"] = user
+          if pw:
+              email["password"] = pw
+          if to:
+              email["to_addr"] = to
+
+          # 러너엔 GUI 가 없으니 데스크톱 알림은 강제로 끈다(이메일만 사용)
+          cfg.setdefault("notify", {})["desktop"] = False
+
+          with open("config.yaml", "w", encoding="utf-8") as f:
+              yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+
+          # 확인용: 비밀값은 절대 찍지 않고 키 존재 여부만 출력
+          print("config.yaml 생성 완료 / service_key 설정됨:", bool(ah.get("service_key")))
+          PY
+
+      # 5) 알리미 실행
+      #    ⚠️ 상태파일(.seen_pblanc.json / db)은 러너가 매 실행마다 초기화된다.
+      #       → 첫 실행처럼 취급되어 '기존 공고'가 새 공고로 오인될 수 있다.
+      #       (applyhome.find_matches 는 first_run 시 알림을 억제하도록 설계됨)
+      #       향후 개선: actions/cache 또는 actions/upload-artifact 로
+      #       .seen_pblanc.json 을 실행 간에 보존하면 신규 감지가 정확해진다.
+      - name: 청약 공고 감시 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python -m cheong.main apt-watch
