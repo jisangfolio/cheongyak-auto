@@ -82,19 +82,50 @@ def _find_notice(pno):
 
 
 # ---------- 명령 ----------
-def _apt_body(config, new_notices, upcoming):
-    """지원가치 필터 적용 + 출처별(청약홈 분양 / LH 임대) 섹션 분리 이메일 본문.
+def _completed_lines(config):  # noqa: ARG001
+    """신청 완료로 표시된 공고 중 아직 발표·마감 전인 것을 한 줄씩 반환."""
+    from datetime import date
+    from . import db
+    applied = db.get_applied()
+    if not applied:
+        return []
+    notices = {str(n["pno"]): n for n in db.get_notices()}
+    today = date.today()
+    lines = []
+    for pno in applied:
+        rec = notices.get(str(pno))
+        if not rec:
+            lines.append(f"· 공고 {pno} (완료)")
+            continue
+        award = db._parse_date(rec.get("award"))
+        ref = award or db._parse_date(rec.get("end"))
+        if ref is not None and ref < today:
+            continue  # 발표/마감 지남 → 완료 목록에서 자동 제외
+        tail = ""
+        if ref:
+            dd = (ref - today).days
+            label = "발표" if award else "마감"
+            tail = f"  ({label} {ref} · D-{dd})" if dd > 0 else f"  ({label} {ref} · D-day)"
+        lines.append(f"· [{rec.get('type', '')}] {str(rec.get('name', ''))[:32]}{tail}")
+    return lines
 
-    (본문, 유지건수, 제외건수) 반환.
+
+def _apt_body(config, new_notices, upcoming):
+    """지원가치 필터 + 출처별 섹션 분리 + 신청 완료 섹션 이메일 본문.
+
+    (본문, 유지건수, 제외건수) 반환. 이미 '신청 완료'한 공고는 재알림에서 제외.
     """
     from .applyhome import _fmt
-    from . import applicability as ap
+    from . import applicability as ap, db
     profile = _cheong_cfg(config)
+    applied = set(db.get_applied())
     excluded = []
 
     def _render(recs):
         kept = []
         for r in recs:
+            if str(r.get("pno", "")) in applied:
+                continue  # 이미 신청 완료 → '지원해라' 재알림 안 함
             v = ap.applicability(r, profile)
             if not v["worth"]:
                 excluded.append(f"· {str(r.get('name', ''))[:34]} — {v['reason']}")
@@ -130,6 +161,12 @@ def _apt_body(config, new_notices, upcoming):
             out.append("\n\n".join(kept_up))
         out.append("")
         total += len(kept_new) + len(kept_up)
+
+    comp = _completed_lines(config)
+    if comp:
+        out.append("✅ 신청 완료 (발표·마감 전까지 표시)")
+        out.append("\n".join(comp))
+        out.append("")
 
     if excluded:
         out.append("── 지원 불가로 제외 ──")
@@ -255,6 +292,31 @@ def cmd_predict(config, args):
     print(f"⚠️ {r.get('caveat', '')}")
 
 
+def cmd_done(config, args):  # noqa: ARG001
+    from . import db
+    rec = _find_notice(args.pno)
+    db.mark_applied(args.pno)
+    name = rec.get("name", "") if rec else "(DB에 공고정보 없음 — sync-db 후 이름 표시됨)"
+    print(f"✅ 신청 완료 표시: {args.pno}  {str(name)[:44]}")
+    print("   → 이 공고는 '지원해라' 알림에서 빠지고, 발표/마감 전까지 '신청 완료'로 표시됩니다.")
+
+
+def cmd_undone(config, args):  # noqa: ARG001
+    from . import db
+    db.unmark_applied(args.pno)
+    print(f"신청 완료 표시 해제: {args.pno}")
+
+
+def cmd_status(config, args):  # noqa: ARG001
+    lines = _completed_lines(config)
+    if not lines:
+        print("신청 완료로 표시된 공고가 없습니다.  (표시: python -m cheong.main done <공고번호>)")
+        return
+    print(f"✅ 신청 완료 {len(lines)}건 (발표·마감 전까지)")
+    for ln in lines:
+        print("  " + ln)
+
+
 def cmd_watch(config, args):
     target = get_target(config, args.target)
     interval = args.interval or config.get("poll_interval_seconds", 60)
@@ -296,6 +358,11 @@ def main():
     pb.add_argument("pno")
     pp = sub.add_parser("predict", help="당첨 가능성 휴리스틱 추정(공고번호)")
     pp.add_argument("pno")
+    pd = sub.add_parser("done", help="신청 완료 표시(공고번호) — 알림에서 빼고 발표 전까지 완료 표시")
+    pd.add_argument("pno")
+    pu = sub.add_parser("undone", help="신청 완료 표시 해제(공고번호)")
+    pu.add_argument("pno")
+    sub.add_parser("status", help="신청 완료 목록 + 발표/마감 D-day")
     sub.add_parser("test-notify", help="알림 설정 테스트")
 
     pw = sub.add_parser("watch", help="응모 오픈 감시 → 알림 (+선택적 자동입력)")
@@ -316,6 +383,9 @@ def main():
         "eligibility": cmd_eligibility,
         "brief": cmd_brief,
         "predict": cmd_predict,
+        "done": cmd_done,
+        "undone": cmd_undone,
+        "status": cmd_status,
         "test-notify": cmd_test_notify,
         "watch": cmd_watch,
         "fill": cmd_fill,

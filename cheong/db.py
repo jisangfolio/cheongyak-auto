@@ -80,6 +80,9 @@ def init_db(db_path=DEFAULT_DB):
             )
             """
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS applied (pno TEXT PRIMARY KEY, applied_at TEXT)"
+        )
         conn.commit()
 
 
@@ -209,6 +212,50 @@ def get_seen(db_path=DEFAULT_DB):
     with _connect(db_path) as conn:
         rows = conn.execute("SELECT pno FROM seen").fetchall()
     return {row["pno"] for row in rows}
+
+
+def mark_applied(pno, db_path=DEFAULT_DB):
+    """pno를 '신청 완료'로 기록한다(신청한 시각도 저장)."""
+    init_db(db_path)
+    pno = str(pno or "").strip()
+    if not pno:
+        return
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO applied (pno, applied_at) VALUES (?, ?)",
+            (pno, datetime.now().isoformat()),
+        )
+        conn.commit()
+
+
+def unmark_applied(pno, db_path=DEFAULT_DB):
+    """'신청 완료' 표시를 해제한다."""
+    init_db(db_path)
+    pno = str(pno or "").strip()
+    if not pno:
+        return
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM applied WHERE pno = ?", (pno,))
+        conn.commit()
+
+
+def is_applied(pno, db_path=DEFAULT_DB):
+    """pno가 신청 완료로 표시돼 있는지 여부."""
+    init_db(db_path)
+    pno = str(pno or "").strip()
+    if not pno:
+        return False
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT 1 FROM applied WHERE pno = ?", (pno,)).fetchone()
+    return row is not None
+
+
+def get_applied(db_path=DEFAULT_DB):
+    """{pno: applied_at} 형태로 신청 완료 목록을 반환한다."""
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT pno, applied_at FROM applied").fetchall()
+    return {row["pno"]: row["applied_at"] for row in rows}
 
 
 def save_competition(pno, payload, db_path=DEFAULT_DB):

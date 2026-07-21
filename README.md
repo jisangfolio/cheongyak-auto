@@ -53,6 +53,8 @@ python3 -m cheong.main match              # 활성 공고별 '지원 가치' 필
 python3 -m cheong.main eligibility [공고번호]  # 자격 사전체크(특별공급 유형별, 참고용)
 python3 -m cheong.main brief <공고번호>    # LLM 공고 브리핑(키 없으면 템플릿 요약)
 python3 -m cheong.main predict <공고번호>  # 당첨 가능성 휴리스틱 추정
+python3 -m cheong.main done <공고번호>     # 신청 완료 표시(알림에서 빼고 발표/마감까지 완료 표시)
+python3 -m cheong.main status             # 신청 완료 목록 + 발표/마감 D-day
 streamlit run dashboard/app.py            # 웹 대시보드(공고 표 + 가점 계산기)
 ```
 - `brief` 는 `config.yaml` 의 `briefing.api_key`(또는 `ANTHROPIC_API_KEY` 환경변수)가 있으면 Claude로 요약하고, 없으면 템플릿으로 폴백한다.
