@@ -83,13 +83,16 @@ def _find_notice(pno):
 
 # ---------- 명령 ----------
 def _apt_body(config, new_notices, upcoming):
-    """지원가치 필터를 적용해 이메일 본문 생성. (본문, 유지건수, 제외건수) 반환."""
+    """지원가치 필터 적용 + 출처별(청약홈 분양 / LH 임대) 섹션 분리 이메일 본문.
+
+    (본문, 유지건수, 제외건수) 반환.
+    """
     from .applyhome import _fmt
     from . import applicability as ap
     profile = _cheong_cfg(config)
-    excluded, out = [], []
+    excluded = []
 
-    def _section(title_fmt, recs):
+    def _render(recs):
         kept = []
         for r in recs:
             v = ap.applicability(r, profile)
@@ -100,18 +103,38 @@ def _apt_body(config, new_notices, upcoming):
             if v.get("note"):
                 block += "\n · ▸ " + v["note"]
             kept.append(block)
-        if kept:
-            out.append(title_fmt.format(n=len(kept)))
-            out.append("")
-            out.append("\n\n".join(kept))
-        return len(kept)
+        return kept
 
-    n = _section("🆕 새 청약 공고 {n}건 (지원가치 필터 통과)", new_notices)
-    n += _section("\n⏰ 청약 접수 임박 {n}건", upcoming)
+    def _is_lh(r):
+        return r.get("source") == "LH"
+
+    groups = [
+        ("🏢 청약홈 (분양)", [r for r in new_notices if not _is_lh(r)],
+                             [r for r in upcoming if not _is_lh(r)]),
+        ("🏠 LH (임대)",     [r for r in new_notices if _is_lh(r)],
+                             [r for r in upcoming if _is_lh(r)]),
+    ]
+    out, total = [], 0
+    for title, news, ups in groups:
+        kept_new, kept_up = _render(news), _render(ups)
+        if not (kept_new or kept_up):
+            continue
+        out.append("━" * 22)
+        out.append(title)
+        out.append("━" * 22)
+        if kept_new:
+            out.append(f"🆕 새 공고 {len(kept_new)}건")
+            out.append("\n\n".join(kept_new))
+        if kept_up:
+            out.append(f"\n⏰ 임박 {len(kept_up)}건")
+            out.append("\n\n".join(kept_up))
+        out.append("")
+        total += len(kept_new) + len(kept_up)
+
     if excluded:
-        out.append("\n── 지원 불가로 제외 ──")
+        out.append("── 지원 불가로 제외 ──")
         out.append("\n".join(excluded))
-    return "\n".join(out).strip(), n, len(excluded)
+    return "\n".join(out).strip(), total, len(excluded)
 
 
 def cmd_apt_watch(config, args):  # noqa: ARG001
