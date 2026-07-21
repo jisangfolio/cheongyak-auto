@@ -5,6 +5,7 @@
 실제 청약 신청(인증서·자격판정)은 자동화 대상이 아니며 사람이 직접 한다.
 """
 import json
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -14,17 +15,32 @@ API_URL = "https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getAPTLttotPblan
 SEEN_FILE = Path(__file__).resolve().parent.parent / ".seen_pblanc.json"
 
 
+def _get_json(params, timeout=30, retries=3, backoff=3):
+    """공공데이터 API GET(JSON). 일시적 네트워크 오류/타임아웃은 재시도한다.
+
+    공공데이터포털은 순간적으로 느리거나 5xx를 내는 일이 잦아, 하루 1회 실행이
+    한 번의 타임아웃으로 죽지 않도록 지수 백오프로 재시도한다.
+    """
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(API_URL, params=params, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            last = e
+            if attempt < retries:
+                wait = backoff * attempt
+                print(f"[applyhome] API 재시도 {attempt}/{retries} ({wait}s 후): {e}")
+                time.sleep(wait)
+    raise last
+
+
 def _fetch_all(service_key, per_page=500, max_pages=40):
     items, page = [], 1
     while page <= max_pages:
-        r = requests.get(
-            API_URL,
-            params={"page": page, "perPage": per_page,
-                    "serviceKey": service_key, "returnType": "JSON"},
-            timeout=20,
-        )
-        r.raise_for_status()
-        body = r.json()
+        body = _get_json({"page": page, "perPage": per_page,
+                          "serviceKey": service_key, "returnType": "JSON"})
         data = body.get("data", []) or []
         items.extend(data)
         total = body.get("totalCount", 0)
