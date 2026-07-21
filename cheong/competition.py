@@ -4,20 +4,20 @@
 - 실제 청약 신청은 자동화 대상이 아니며, 여기서는 참고용 경쟁률 정보만 가져온다.
 
 ⚠️ 이 서비스(15098905)는 분양정보 서비스(15098547)와 **별도**로
-   data.go.kr 에서 활용신청(serviceKey 발급)이 필요하다. 두 서비스의 키는 서로 다르다.
-⚠️ REST operation 경로(아래 API_URL)는 공식 명세가 다운로드 .docx 로만 제공되어
-   웹에서 문자열로 검증하지 못했다 → **엔드포인트 미검증(가능성) 상태**이며,
-   자매 서비스(15098547)의 REB 네이밍 규칙
-   (ApplyhomeInfoDetailSvc/v1/getAPTLttotPblancDetail)에 맞춰 가장 유력한
-   경로를 사용했다. 운영 중 404/응답이상이면 data.go.kr Swagger UI 의 실제
-   operation 명(getAPTLttotPblanc... 계열)으로 API_URL 을 교체할 것.
+   data.go.kr 에서 활용신청(serviceKey 발급)이 필요하다.
+✅ 엔드포인트/필드 2026-07-21 라이브 검증 완료(Swagger stage 36148).
+   - 경로: api.odcloud.kr/api/ApplyhomeInfoCmpetRtSvc/v1/getAPTLttotPblancCmpet
+   - 서버측 필터: cond[HOUSE_MANAGE_NO::EQ] / cond[PBLANC_NO::EQ] 정상 작동
+   - 필드: HOUSE_TY(주택형) · SUPLY_HSHLDCO(공급세대) · REQ_CNT(접수건수)
+           · CMPET_RATE(경쟁률; "(△15)" 형태면 15세대 미달) · RESIDE_SENM(해당/기타지역)
+           · SUBSCRPT_RANK_CODE(순위)
+⚠️ 이 데이터는 **접수 마감된 공고의 결과 경쟁률**이다(진행 중 공고는 마감 전까진 값 없음).
 """
 from datetime import datetime
 
-# 이 서비스는 15098547(분양정보)과 별도 활용신청 필요. 엔드포인트 미검증 가능성 있음.
-# 가장 유력한 REST operation 경로(REB 네이밍 규칙 기반, 미검증):
+# 라이브 검증된 REST operation 경로(2026-07-21).
 API_URL = (
-    "https://api.odcloud.kr/api/ApplyhomeCompetitionRateSvc/v1"
+    "https://api.odcloud.kr/api/ApplyhomeInfoCmpetRtSvc/v1"
     "/getAPTLttotPblancCmpet"
 )
 
@@ -66,12 +66,115 @@ def _norm(it):
             or it.get("LTTOT_CMPET_RATE", "")
             or ""
         ),
-        # 지역/순위 등 부가 정보(있으면)
-        "region": it.get("SUBSCRPT_AREA_CODE_NM", "") or "",
-        "rank": it.get("RANK_NM", "") or it.get("RESIDE_SECD_NM", "") or "",
+        # 지역/순위 등 부가 정보(검증된 실제 필드명 우선)
+        "region": it.get("RESIDE_SENM", "")            # 해당지역/기타지역
+        or it.get("SUBSCRPT_AREA_CODE_NM", "") or "",
+        "rank": str(it.get("SUBSCRPT_RANK_CODE", "")   # 1/2 순위
+                    or it.get("RANK_NM", "") or ""),
+        "model_no": str(it.get("MODEL_NO", "") or ""),
         # 참고 날짜
         "rcept_ende": it.get("RCEPT_ENDDE", "") or "",
     }
+
+
+def _parse_rate(raw):
+    """CMPET_RATE 문자열을 (미달여부, 수치, 사람이 읽는 표기)로 해석.
+
+    - "(△15)"  → (True, 15, "미달 15세대")   ← 미달(신청<공급)
+    - "16.5"   → (False, 16.5, "16.5:1")
+    - "" / None→ (False, None, "-")
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return False, None, "-"
+    if "△" in s:
+        import re
+        m = re.search(r"\d+", s)
+        n = int(m.group(0)) if m else None
+        return True, n, (f"미달 {n}세대" if n is not None else "미달")
+    import re
+    m = re.search(r"-?\d+(?:\.\d+)?", s.replace(",", ""))
+    if not m:
+        return False, None, s
+    val = float(m.group(0))
+    return False, val, f"{val:g}:1"
+
+
+def fetch_rates_by_type(service_key, house_manage_no=None, pblanc_no=None,
+                        per_page=300, timeout=20):
+    """특정 공고의 **주택형별 경쟁률**을 집계한 리스트로 반환.
+
+    반환 원소(경쟁률 낮은/미달 우선 정렬):
+      {house_type, supply, req_cnt, rate_raw, rate_value,
+       undersubscribed(bool), rate_text}
+    데이터 없음/오류/식별자 미지정이면 [].
+
+    ⚠️ 접수 마감된 공고의 결과값이다(진행 중 공고엔 아직 데이터 없음).
+    """
+    try:
+        import requests
+    except ImportError:
+        return []
+    if not service_key or not (house_manage_no or pblanc_no):
+        return []
+
+    params = {"page": 1, "perPage": per_page, "serviceKey": service_key,
+              "returnType": "JSON"}
+    if house_manage_no:
+        params["cond[HOUSE_MANAGE_NO::EQ]"] = str(house_manage_no)
+    if pblanc_no:
+        params["cond[PBLANC_NO::EQ]"] = str(pblanc_no)
+
+    try:
+        r = requests.get(API_URL, params=params, timeout=timeout)
+        r.raise_for_status()
+        data = (r.json() or {}).get("data", []) or []
+    except (requests.RequestException, ValueError):
+        return []
+    except Exception:
+        return []
+
+    # 주택형(HOUSE_TY) 단위로 집계: 공급세대=최대치, 접수건수=합산, 경쟁률=대표값.
+    agg = {}
+    for it in data:
+        if not isinstance(it, dict):
+            continue
+        ht = str(it.get("HOUSE_TY", "") or "").strip()
+        if not ht:
+            continue
+        cur = agg.setdefault(ht, {"supply": 0, "req_cnt": 0, "rate_raw": ""})
+        try:
+            cur["supply"] = max(cur["supply"], int(it.get("SUPLY_HSHLDCO", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            cur["req_cnt"] += int(it.get("REQ_CNT", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+        if it.get("CMPET_RATE"):
+            cur["rate_raw"] = it.get("CMPET_RATE")
+
+    out = []
+    for ht, v in agg.items():
+        under, val, text = _parse_rate(v["rate_raw"])
+        out.append({
+            "house_type": ht,
+            "supply": v["supply"],
+            "req_cnt": v["req_cnt"],
+            "rate_raw": v["rate_raw"],
+            "rate_value": val,
+            "undersubscribed": under,
+            "rate_text": text,
+        })
+
+    # 미달(당첨 쉬움) → 낮은 경쟁률 → 높은 경쟁률 순.
+    def _key(e):
+        if e["undersubscribed"]:
+            return (0, 0.0)
+        return (1, e["rate_value"] if e["rate_value"] is not None else 9e9)
+
+    out.sort(key=_key)
+    return out
 
 
 def fetch_competition(

@@ -53,6 +53,7 @@ python3 -m cheong.main match              # 활성 공고별 '지원 가치' 필
 python3 -m cheong.main eligibility [공고번호]  # 자격 사전체크(특별공급 유형별, 참고용)
 python3 -m cheong.main brief <공고번호>    # LLM 공고 브리핑(키 없으면 템플릿 요약)
 python3 -m cheong.main predict <공고번호>  # 당첨 가능성 휴리스틱 추정
+python3 -m cheong.main compete <주택관리번호> # 주택형별 경쟁률/미달 조회(마감된 공고)
 python3 -m cheong.main done <공고번호>     # 신청 완료 표시(알림에서 빼고 발표/마감까지 완료 표시)
 python3 -m cheong.main status             # 신청 완료 목록 + 발표/마감 D-day
 streamlit run dashboard/app.py            # 웹 대시보드 UI(공고 보기·신청완료 버튼·자격 체크)
@@ -100,13 +101,14 @@ notify:
 ```
 
 ## 로드맵
-- [x] 경쟁률 API 클라이언트 (`cheong/competition.py`, 별도 활용신청 필요)
+- [x] 경쟁률 API 클라이언트 (`cheong/competition.py`, 15098905 · 라이브 검증 · `compete` 명령)
+- [x] LH 상세 API 연동 (`cheong/lh.py` fetch_detail, 15057999) — 접수시작·**당첨발표일**·주소·공고문파일·접수처 자동 채움
 - [x] 청약가점 계산기 (`cheong/gajeom.py`, 84점 만점)
-- [x] SQLite 적재 (`cheong/db.py`)
+- [x] SQLite 적재 (`cheong/db.py`, `detail_json` 보강필드 보존)
 - [x] GitHub Actions 스케줄러 (`.github/workflows/daily.yml`)
 - [x] Streamlit 대시보드 (`dashboard/app.py`)
 - [x] LLM 공고 브리핑 (`cheong/briefing.py`) · 당첨 확률 휴리스틱 (`cheong/predict.py`)
-- [ ] 경쟁률 실데이터 연동 후 예측 정확도 개선 · 커트라인 학습 모델
+- [ ] 경쟁률 실데이터 학습 커트라인 모델(현재는 규칙 기반 휴리스틱)
 - [ ] Docker 배포 (`Dockerfile` 포함, 이미지 퍼블리시 예정)
 
 ## 부가 기능: 응모 폼 자동입력 (실험적)

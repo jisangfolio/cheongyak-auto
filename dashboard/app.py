@@ -106,6 +106,25 @@ with tab1:
             st.write("▸ 지원경로: " + " / ".join(v["paths"]))
             if v.get("note"):
                 st.caption("▸ " + v["note"])
+            # LH 상세 API 보강정보(접수처·공고문 파일) 표시.
+            if r.get("detail_json"):
+                try:
+                    import json as _json
+                    d = _json.loads(r["detail_json"])
+                except (TypeError, ValueError):
+                    d = {}
+                places = d.get("apply_places") or []
+                if places and (places[0].get("place") or places[0].get("guide")):
+                    p = places[0]
+                    st.caption("📍 접수처: "
+                               + (p.get("place") or p.get("guide", ""))[:80])
+                files = d.get("files") or []
+                if files:
+                    links = "  ·  ".join(
+                        f"[{f.get('label', '공고문')}]({f['url']})"
+                        for f in files if f.get("url"))
+                    if links:
+                        st.caption("📄 " + links)
             c1, c2 = st.columns([3, 1])
             aw = c1.text_input("당첨발표일 YYYY-MM-DD (선택 — 공고문 확인)",
                                key=f"aw_{r['pno']}", value=r.get("award") or "",

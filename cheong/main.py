@@ -118,9 +118,31 @@ def _apt_body(config, new_notices, upcoming):
     """
     from .applyhome import _fmt
     from . import applicability as ap, db
+    import json
     profile = _cheong_cfg(config)
     applied = set(db.get_applied())
     excluded = []
+
+    def _lh_extra(r):
+        """LH 상세 보강값(발표일·접수방법)을 이메일 줄로."""
+        lines = []
+        if r.get("award"):
+            lines.append(" · 🏆 당첨발표 " + str(r["award"]))
+        raw = r.get("detail_json")
+        if raw:
+            try:
+                d = json.loads(raw)
+            except (TypeError, ValueError):
+                d = {}
+            places = d.get("apply_places") or []
+            if places:
+                p = places[0]
+                where = p.get("place", "")
+                guide = (p.get("guide", "") or "").replace("\n", " ").strip()
+                txt = where or guide
+                if txt:
+                    lines.append(" · 📍 접수 " + txt[:50])
+        return lines
 
     def _render(recs):
         kept = []
@@ -134,6 +156,8 @@ def _apt_body(config, new_notices, upcoming):
             block = _fmt(r).rstrip() + "\n · " + ap.one_liner(r, profile)
             if v.get("note"):
                 block += "\n · ▸ " + v["note"]
+            for extra in _lh_extra(r):
+                block += "\n" + extra
             kept.append(block)
         return kept
 
@@ -308,6 +332,36 @@ def cmd_done(config, args):  # noqa: ARG001
         print("   발표일 미상 → 마감일까지 표시. 발표일 알면: done <공고번호> <YYYY-MM-DD>")
 
 
+def cmd_compete(config, args):
+    """청약홈 경쟁률 API로 특정 공고의 주택형별 경쟁률/미달을 조회·저장.
+
+    ⚠️ 접수 마감된 공고의 결과값이다(진행 중 공고는 아직 데이터 없음).
+    """
+    from . import db
+    from .competition import fetch_rates_by_type
+    key = config.get("applyhome", {}).get("service_key")
+    hmn = args.house_manage_no
+    rows = fetch_rates_by_type(key, house_manage_no=hmn)
+    if not rows:
+        print(f"[compete] 주택관리번호 {hmn} 의 경쟁률 데이터가 없습니다.\n"
+              "  · 접수 마감 전 공고이거나(마감 후 집계) 번호가 다를 수 있습니다.\n"
+              "  · 주택관리번호는 청약홈 공고 상세의 'HOUSE_MANAGE_NO' 값입니다.")
+        return
+    print(f"주택관리번호 {hmn} — 주택형별 경쟁률 (미달=당첨 쉬움)\n")
+    for e in rows:
+        flag = "🟢 미달" if e["undersubscribed"] else "🔴 경쟁"
+        print(f"  {flag}  {e['house_type']:<12} 공급 {e['supply']:>4}세대 · "
+              f"접수 {e['req_cnt']:>5}건 · {e['rate_text']}")
+    # DB에 저장(predict 가 참조).
+    try:
+        db.save_competition(str(hmn), {"by_type": rows})
+        under = [e["house_type"] for e in rows if e["undersubscribed"]]
+        if under:
+            print(f"\n💡 미달 주택형(신청 시 당첨 가능성 큼): {', '.join(under)}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def cmd_undone(config, args):  # noqa: ARG001
     from . import db
     db.unmark_applied(args.pno)
@@ -365,6 +419,8 @@ def main():
     pb.add_argument("pno")
     pp = sub.add_parser("predict", help="당첨 가능성 휴리스틱 추정(공고번호)")
     pp.add_argument("pno")
+    pc = sub.add_parser("compete", help="주택형별 경쟁률 조회(주택관리번호; 마감된 공고)")
+    pc.add_argument("house_manage_no")
     pd = sub.add_parser("done", help="신청 완료 표시(공고번호 [발표일YYYY-MM-DD])")
     pd.add_argument("pno")
     pd.add_argument("award", nargs="?", help="당첨발표일 YYYY-MM-DD (선택; LH는 공고문에서 확인)")
@@ -391,6 +447,7 @@ def main():
         "eligibility": cmd_eligibility,
         "brief": cmd_brief,
         "predict": cmd_predict,
+        "compete": cmd_compete,
         "done": cmd_done,
         "undone": cmd_undone,
         "status": cmd_status,
