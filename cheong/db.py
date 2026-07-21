@@ -81,8 +81,13 @@ def init_db(db_path=DEFAULT_DB):
             """
         )
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS applied (pno TEXT PRIMARY KEY, applied_at TEXT)"
+            "CREATE TABLE IF NOT EXISTS applied "
+            "(pno TEXT PRIMARY KEY, applied_at TEXT, award_date TEXT)"
         )
+        # 구버전 applied 테이블에 award_date 컬럼이 없으면 추가(마이그레이션).
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(applied)").fetchall()]
+        if "award_date" not in cols:
+            conn.execute("ALTER TABLE applied ADD COLUMN award_date TEXT")
         conn.commit()
 
 
@@ -214,16 +219,26 @@ def get_seen(db_path=DEFAULT_DB):
     return {row["pno"] for row in rows}
 
 
-def mark_applied(pno, db_path=DEFAULT_DB):
-    """pno를 '신청 완료'로 기록한다(신청한 시각도 저장)."""
+def mark_applied(pno, award_date=None, db_path=DEFAULT_DB):
+    """pno를 '신청 완료'로 기록한다(신청 시각 + 당첨발표일 저장).
+
+    award_date 미지정 시 기존에 저장된 발표일을 보존한다.
+    """
     init_db(db_path)
     pno = str(pno or "").strip()
     if not pno:
         return
+    award_date = str(award_date).strip() if award_date else None
     with _connect(db_path) as conn:
+        if award_date is None:
+            row = conn.execute(
+                "SELECT award_date FROM applied WHERE pno = ?", (pno,)
+            ).fetchone()
+            if row is not None and row["award_date"]:
+                award_date = row["award_date"]
         conn.execute(
-            "INSERT OR REPLACE INTO applied (pno, applied_at) VALUES (?, ?)",
-            (pno, datetime.now().isoformat()),
+            "INSERT OR REPLACE INTO applied (pno, applied_at, award_date) VALUES (?, ?, ?)",
+            (pno, datetime.now().isoformat(), award_date),
         )
         conn.commit()
 
@@ -251,11 +266,11 @@ def is_applied(pno, db_path=DEFAULT_DB):
 
 
 def get_applied(db_path=DEFAULT_DB):
-    """{pno: applied_at} 형태로 신청 완료 목록을 반환한다."""
+    """{pno: award_date(없으면 None)} 형태로 신청 완료 목록을 반환한다."""
     init_db(db_path)
     with _connect(db_path) as conn:
-        rows = conn.execute("SELECT pno, applied_at FROM applied").fetchall()
-    return {row["pno"]: row["applied_at"] for row in rows}
+        rows = conn.execute("SELECT pno, award_date FROM applied").fetchall()
+    return {row["pno"]: row["award_date"] for row in rows}
 
 
 def save_competition(pno, payload, db_path=DEFAULT_DB):

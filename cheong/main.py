@@ -92,21 +92,22 @@ def _completed_lines(config):  # noqa: ARG001
     notices = {str(n["pno"]): n for n in db.get_notices()}
     today = date.today()
     lines = []
-    for pno in applied:
-        rec = notices.get(str(pno))
-        if not rec:
-            lines.append(f"· 공고 {pno} (완료)")
-            continue
-        award = db._parse_date(rec.get("award"))
-        ref = award or db._parse_date(rec.get("end"))
+    for pno, manual_award in applied.items():
+        rec = notices.get(str(pno)) or {}
+        name = str(rec.get("name", "")) or f"공고 {pno}"
+        award = db._parse_date(manual_award) or db._parse_date(rec.get("award"))
+        end = db._parse_date(rec.get("end"))
+        ref = award or end
         if ref is not None and ref < today:
             continue  # 발표/마감 지남 → 완료 목록에서 자동 제외
         tail = ""
-        if ref:
-            dd = (ref - today).days
-            label = "발표" if award else "마감"
-            tail = f"  ({label} {ref} · D-{dd})" if dd > 0 else f"  ({label} {ref} · D-day)"
-        lines.append(f"· [{rec.get('type', '')}] {str(rec.get('name', ''))[:32]}{tail}")
+        if award:
+            dd = (award - today).days
+            tail = f"  (발표 {award}" + (f" · D-{dd})" if dd > 0 else " · D-day)")
+        elif end:
+            dd = (end - today).days
+            tail = f"  (마감 {end}" + (f" · D-{dd})" if dd > 0 else " · D-day)")
+        lines.append(f"· [{rec.get('type', '')}] {name[:32]}{tail}")
     return lines
 
 
@@ -295,10 +296,16 @@ def cmd_predict(config, args):
 def cmd_done(config, args):  # noqa: ARG001
     from . import db
     rec = _find_notice(args.pno)
-    db.mark_applied(args.pno)
-    name = rec.get("name", "") if rec else "(DB에 공고정보 없음 — sync-db 후 이름 표시됨)"
+    award = getattr(args, "award", None)
+    if not award and rec:
+        award = rec.get("award") or None   # 청약홈은 DB에 당첨발표일 존재
+    db.mark_applied(args.pno, award_date=award)
+    name = rec.get("name", "") if rec else "(DB에 공고정보 없음 — sync-db 후 이름 표시)"
     print(f"✅ 신청 완료 표시: {args.pno}  {str(name)[:44]}")
-    print("   → 이 공고는 '지원해라' 알림에서 빠지고, 발표/마감 전까지 '신청 완료'로 표시됩니다.")
+    if award:
+        print(f"   당첨발표일 {award} — 발표 전까지 메일/대시보드에 표시됩니다.")
+    else:
+        print("   발표일 미상 → 마감일까지 표시. 발표일 알면: done <공고번호> <YYYY-MM-DD>")
 
 
 def cmd_undone(config, args):  # noqa: ARG001
@@ -358,8 +365,9 @@ def main():
     pb.add_argument("pno")
     pp = sub.add_parser("predict", help="당첨 가능성 휴리스틱 추정(공고번호)")
     pp.add_argument("pno")
-    pd = sub.add_parser("done", help="신청 완료 표시(공고번호) — 알림에서 빼고 발표 전까지 완료 표시")
+    pd = sub.add_parser("done", help="신청 완료 표시(공고번호 [발표일YYYY-MM-DD])")
     pd.add_argument("pno")
+    pd.add_argument("award", nargs="?", help="당첨발표일 YYYY-MM-DD (선택; LH는 공고문에서 확인)")
     pu = sub.add_parser("undone", help="신청 완료 표시 해제(공고번호)")
     pu.add_argument("pno")
     sub.add_parser("status", help="신청 완료 목록 + 발표/마감 D-day")
