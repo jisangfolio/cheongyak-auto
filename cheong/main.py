@@ -115,7 +115,15 @@ def _apt_body(config, new_notices, upcoming):
 
 
 def cmd_apt_watch(config, args):  # noqa: ARG001
-    new_notices, upcoming, first_run = find_matches(config)
+    new_notices, upcoming, first_run = find_matches(config)  # 청약홈(분양)
+    if (config.get("lh") or {}).get("enabled"):              # LH(임대) 추가
+        try:
+            from . import lh
+            n2, u2, _ = lh.find_lh_matches(config)
+            new_notices += n2
+            upcoming += u2
+        except Exception as e:  # noqa: BLE001
+            print(f"[apt] LH 조회 건너뜀: {e}")
     try:
         from . import db
         db.init_db()
@@ -165,6 +173,12 @@ def cmd_sync_db(config, args):  # noqa: ARG001
     db.init_db()
     migrated = db.migrate_seen_file(_SEEN_FILE)
     records = _fetch_region_records(config)
+    if (config.get("lh") or {}).get("enabled"):
+        try:
+            from . import lh
+            records += lh.fetch_records(config)
+        except Exception as e:  # noqa: BLE001
+            print(f"[db] LH 조회 건너뜀: {e}")
     n = db.upsert_notices(records)
     print(f"[db] 공고 {n}건 저장 · seen {migrated}건 이관 → {db.DEFAULT_DB}")
 

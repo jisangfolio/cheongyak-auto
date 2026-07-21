@@ -63,6 +63,14 @@ briefing:
   api_key: ""
   max_tokens: 600
 
+# ===== LH 임대주택 공고 (선택) =====
+# 청약홈이 못 잡는 국민임대·행복주택·청년임대 등. LH 분양임대공고문 API(15058530) 별도 활용신청 필요
+# service_key 생략 시 applyhome.service_key 재사용(같은 data.go.kr 키)
+lh:
+  enabled: false
+  upp_types: ["06"]        # 06=임대. 05=분양은 청약홈과 중복
+  remind_days_before: 3
+
 # --- 감시/자동입력 대상들 (경품/응모용, 아파트 청약엔 미사용) ---
 targets:
   # 예시 1) 정적 페이지에서 '응모하기' 글자가 뜨면 오픈으로 판단 (가벼운 http 모드)

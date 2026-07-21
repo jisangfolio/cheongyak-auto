@@ -6,6 +6,7 @@ apt-watch.log
 *.log
 # 런타임 상태(기준선 · SQLite DB)
 .seen_pblanc.json
+.seen_lh.json
 data/
 # 개인 경로 박힌 실제 설치 파일
 com.jjpark.*.plist
