@@ -1,225 +1,162 @@
-"""청약 공고 Streamlit 대시보드 (cheong.db 에서 읽는다).
+"""청약 알리미 웹 대시보드 (Streamlit).
 
-프로젝트 루트에서 실행한다:
-    streamlit run dashboard/app.py
+터미널 없이 클릭으로:
+- 지원가치 있는 공고 보기(청약홈 분양 + LH 임대, 자격 필터)
+- '신청 완료' 표시(당첨발표일 첨부) / 해제
+- 신청 완료 목록 + 발표·마감 D-day
+- 내 자격 사전체크 + 청약가점
 
-화면 구성
-  (1) 사이드바: 관심지역 필터 입력 + "진행중만" 체크
-  (2) 본문: db.get_notices 로 공고 표(주택명/지역/유형/청약접수/당첨발표/공급세대/링크)
-  (3) 사이드바: 청약가점 계산기(무주택기간/부양가족/통장기간 → gajeom.calc_gajeom)
-  (4) 데이터가 없으면 apt-watch 를 먼저 실행하라고 안내
-
-대시보드 전용 파일이므로 streamlit 은 파일 상단에서 import 한다.
-단, cheong 패키지는 sys.path 보정 후 import 하며, DB 미존재/빈 DB 를 방어한다.
+실행: 프로젝트 루트에서  streamlit run dashboard/app.py
 """
+import os
 import sys
-from datetime import date, datetime
-from pathlib import Path
+from datetime import date
 
 import streamlit as st
 
-# 프로젝트 루트(dashboard/의 부모)를 sys.path 에 추가해 cheong 패키지를 import.
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+# 프로젝트 루트를 import 경로에 추가(cheong 패키지 사용).
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-from cheong import db, gajeom  # noqa: E402  (sys.path 보정 이후 import)
+from cheong import applicability as ap, db, eligibility  # noqa: E402
+from cheong.config import load_config  # noqa: E402
 
-
-def _parse_date(s):
-    """날짜 문자열을 date로 파싱한다(applyhome.py·db.py와 동일 포맷).
-
-    %Y-%m-%d → %Y.%m.%d → %Y%m%d 순으로 시도하고, 실패하면 None.
-    """
-    if not s:
-        return None
-    s = str(s).strip()[:10]
-    for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y%m%d"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except ValueError:
-            continue
-    return None
+st.set_page_config(page_title="청약 알리미", page_icon="🏠", layout="wide")
 
 
-def _fmt_date(s):
-    """표시용 날짜 문자열(YYYY-MM-DD). 파싱 실패 시 원본을 그대로 돌려준다."""
-    d = _parse_date(s)
-    if d is None:
-        return str(s or "")
-    return d.isoformat()
-
-
-def _load_notices(regions, active_only):
-    """db.get_notices 를 호출하되 DB 미존재/오류를 방어한다.
-
-    반환: (notices, error)
-      · notices: dict 리스트(성공 시). 실패하면 빈 리스트.
-      · error  : 오류 메시지 문자열 또는 None.
-    """
+def _load_cfg():
     try:
-        notices = db.get_notices(regions=regions or None, active_only=active_only)
-        return notices, None
-    except Exception as exc:  # noqa: BLE001  (DB 파일 없음·스키마 오류 등 광범위 방어)
-        # DB 파일이 없거나 손상된 경우에도 대시보드가 죽지 않게 방어한다.
-        return [], str(exc)
+        return load_config(os.path.join(_ROOT, "config.yaml"))
+    except FileNotFoundError:
+        st.error("config.yaml 이 없습니다. config.example.yaml 을 복사해 값을 채우세요.")
+        st.stop()
 
 
-def _to_table_rows(notices):
-    """공고 dict 리스트를 표시용 행 리스트로 변환한다.
+def _refresh(cfg):
+    """청약홈 + LH 공고를 다시 받아 DB에 저장. 저장 건수 반환."""
+    from cheong.applyhome import _fetch_all, _record
+    ah = cfg.get("applyhome", {})
+    regions = ah.get("regions") or []
+    recs = []
+    for it in _fetch_all(ah["service_key"], int(ah.get("per_page", 500))):
+        r = _record(it)
+        if not regions or any(rg in r["area"] for rg in regions):
+            recs.append(r)
+    if (cfg.get("lh") or {}).get("enabled"):
+        from cheong import lh
+        recs += lh.fetch_records(cfg)
+    db.init_db()
+    return db.upsert_notices(recs)
 
-    컬럼: 주택명/지역/유형/청약접수/당첨발표/공급세대/링크.
-    개별 레코드 오류는 건너뛰어 표 전체가 깨지지 않게 한다.
-    """
-    rows = []
-    for rec in notices:
-        try:
-            begin = _fmt_date(rec.get("begin"))
-            end = _fmt_date(rec.get("end"))
-            if begin and end:
-                receipt = f"{begin} ~ {end}"
+
+def _dday(d):
+    n = (d - date.today()).days
+    return "D-day" if n == 0 else (f"D-{n}" if n > 0 else f"D+{-n}")
+
+
+cfg = _load_cfg()
+청약 = cfg.get("청약", {}) or {}
+regions = (cfg.get("applyhome", {}) or {}).get("regions") or []
+
+st.title("🏠 청약 알리미")
+
+# ───────── 사이드바: 내 정보 ─────────
+with st.sidebar:
+    st.header("내 정보")
+    try:
+        g = eligibility.gajeom(청약)
+        st.metric("예상 청약가점", f"{g['total']} / 84")
+        b = g["breakdown"]
+        st.caption(f"무주택 {b['no_house']} · 부양 {b['dependents']} · 통장 {b['account']}")
+    except Exception as e:  # noqa: BLE001
+        st.caption(f"가점 계산 불가: {e}")
+    st.caption(f"관심지역: {', '.join(regions) or '(미설정)'}")
+    st.divider()
+    if st.button("🔄 공고 새로고침 (청약홈+LH)", use_container_width=True):
+        with st.spinner("청약홈·LH 공고 불러오는 중..."):
+            try:
+                n = _refresh(cfg)
+                st.success(f"{n}건 갱신 완료")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"갱신 실패: {e}")
+    st.caption("값 수정은 config.yaml 의 '청약' 항목")
+
+tab1, tab2, tab3 = st.tabs(["📋 지원가치 공고", "✅ 신청 완료", "🧮 자격 체크"])
+
+# ───────── 탭1: 지원가치 공고 ─────────
+with tab1:
+    active = db.get_notices(regions=regions, active_only=True)
+    applied = set(db.get_applied())
+    worth = [r for r in active
+             if str(r["pno"]) not in applied and ap.applicability(r, 청약)["worth"]]
+    if not active:
+        st.info("공고가 없습니다. 사이드바의 '🔄 공고 새로고침'을 눌러 불러오세요.")
+    st.subheader(f"지원가치 있는 공고 {len(worth)}건")
+    for r in worth:
+        v = ap.applicability(r, 청약)
+        with st.container(border=True):
+            src = "LH 임대" if r.get("source") == "LH" else "청약홈 분양"
+            st.markdown(f"**[{r.get('type', '')}] {r.get('name', '')}**  \n"
+                        f":gray[{src} · {r.get('area', '')}]")
+            접수 = f"{r.get('begin') or '?'} ~ {r.get('end') or '?'}"
+            link = r.get("url", "")
+            st.caption(f"청약접수: {접수}"
+                       + (f"  ·  [📄 공고 보기]({link})" if link else ""))
+            st.write("▸ 지원경로: " + " / ".join(v["paths"]))
+            if v.get("note"):
+                st.caption("▸ " + v["note"])
+            c1, c2 = st.columns([3, 1])
+            aw = c1.text_input("당첨발표일 YYYY-MM-DD (선택 — 공고문 확인)",
+                               key=f"aw_{r['pno']}", value=r.get("award") or "",
+                               placeholder="예: 2026-11-03")
+            if c2.button("✅ 신청완료", key=f"done_{r['pno']}", use_container_width=True):
+                db.mark_applied(r["pno"], award_date=aw or None)
+                st.rerun()
+
+# ───────── 탭2: 신청 완료 ─────────
+with tab2:
+    applied = db.get_applied()
+    notices = {str(n["pno"]): n for n in db.get_notices()}
+    today = date.today()
+    shown = 0
+    for pno, aw in applied.items():
+        rec = notices.get(str(pno), {})
+        award = db._parse_date(aw) or db._parse_date(rec.get("award"))
+        end = db._parse_date(rec.get("end"))
+        ref = award or end
+        if ref is not None and ref < today:
+            continue  # 발표/마감 지남
+        shown += 1
+        with st.container(border=True):
+            st.markdown(f"**[{rec.get('type', '')}] {rec.get('name', pno)}**")
+            if award:
+                st.caption(f"🏆 당첨발표 {award} · {_dday(award)}")
+            elif end:
+                st.caption(f"⏰ 마감 {end} · {_dday(end)}")
             else:
-                receipt = begin or end or ""
-            rows.append(
-                {
-                    "주택명": rec.get("name", "") or "",
-                    "지역": rec.get("area", "") or "",
-                    "유형": rec.get("type", "") or "",
-                    "청약접수": receipt,
-                    "당첨발표": _fmt_date(rec.get("award")),
-                    "공급세대": rec.get("households", "") or "",
-                    "링크": rec.get("url", "") or "",
-                }
-            )
-        except (AttributeError, TypeError):
-            # 형태가 어긋난 레코드는 조용히 건너뛴다(방어적).
-            continue
-    return rows
+                st.caption("신청 완료 (일정 정보 없음)")
+            if st.button("취소", key=f"undo_{pno}"):
+                db.unmark_applied(pno)
+                st.rerun()
+    if shown == 0:
+        st.info("신청 완료로 표시된 공고가 없습니다. "
+                "'📋 지원가치 공고'에서 신청한 공고의 [✅ 신청완료]를 누르세요.")
 
-
-def _render_notice_table(rows):
-    """공고 표를 렌더링한다. 링크 컬럼은 클릭 가능하게 시도한다."""
-    # st.column_config 는 신버전 전용이므로 없으면 일반 표로 폴백한다.
+# ───────── 탭3: 자격 체크 ─────────
+with tab3:
     try:
-        st.dataframe(
-            rows,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "링크": st.column_config.LinkColumn("링크", display_text="바로가기"),
-            },
-        )
-    except Exception:  # noqa: BLE001  (구버전 streamlit·column_config 미지원 방어)
-        st.table(rows)
-
-
-def _render_gajeom_sidebar():
-    """사이드바 청약가점 계산기를 렌더링한다."""
-    st.sidebar.header("청약가점 계산기")
-    st.sidebar.caption("84점 만점 · 참고용(실제 자격판정은 청약홈에서 확인)")
-
-    no_house = st.sidebar.number_input(
-        "무주택기간(년)", min_value=0.0, max_value=30.0, value=0.0, step=0.5,
-    )
-    dependents = st.sidebar.number_input(
-        "부양가족수(명)", min_value=0, max_value=10, value=0, step=1,
-    )
-    account = st.sidebar.number_input(
-        "청약통장 가입기간(년)", min_value=0.0, max_value=30.0, value=0.0, step=0.5,
-    )
-
-    try:
-        result = gajeom.calc_gajeom(no_house, dependents, account)
-    except Exception as exc:  # noqa: BLE001  (계산기 오류가 대시보드를 죽이지 않게)
-        st.sidebar.error(f"가점 계산 오류: {exc}")
-        return
-
-    st.sidebar.metric("총점", f"{result['total']} / {result['max']}")
-
-    breakdown = result.get("breakdown", {})
-    detail = result.get("detail", {})
-    col1, col2, col3 = st.sidebar.columns(3)
-    col1.metric("무주택", breakdown.get("no_house", 0))
-    col2.metric("부양가족", breakdown.get("dependents", 0))
-    col3.metric("통장", breakdown.get("account", 0))
-
-    # 세부 산정 근거는 접어서 보여준다.
-    with st.sidebar.expander("산정 근거 보기"):
-        st.write(detail.get("no_house", ""))
-        st.write(detail.get("dependents", ""))
-        st.write(detail.get("account", ""))
-
-
-def _render_region_sidebar():
-    """사이드바 관심지역 필터·진행중 체크를 렌더링한다.
-
-    반환: (regions, active_only)
-      · regions   : 공백/쉼표로 구분된 관심지역 문자열 리스트.
-      · active_only: "진행중만" 체크 여부.
-    """
-    st.sidebar.header("공고 필터")
-    raw = st.sidebar.text_input(
-        "관심지역(쉼표로 구분)",
-        value="",
-        placeholder="예: 서울, 경기",
-        help="입력한 지역명이 공고 지역에 포함되면 표시합니다.",
-    )
-    active_only = st.sidebar.checkbox("진행중만", value=True)
-
-    # 쉼표·공백으로 나눠 빈 항목을 제거한다.
-    regions = []
-    for part in str(raw).replace("\n", ",").split(","):
-        part = part.strip()
-        if part:
-            regions.append(part)
-    return regions, active_only
-
-
-def main():
-    """대시보드 진입점."""
-    st.set_page_config(page_title="청약 공고 대시보드", page_icon="🏠", layout="wide")
-    st.title("🏠 청약 공고 대시보드")
-    st.caption(f"기준일: {date.today().isoformat()} · 데이터 출처: cheong.db(로컬 SQLite)")
-
-    # --- 사이드바: 필터 + 가점 계산기 ---
-    regions, active_only = _render_region_sidebar()
-    st.sidebar.divider()
-    _render_gajeom_sidebar()
-
-    # --- 본문: 공고 표 ---
-    notices, error = _load_notices(regions, active_only)
-
-    if error is not None:
-        # DB 접근 자체가 실패한 경우(파일 없음·손상 등).
-        st.warning(
-            "데이터베이스를 읽을 수 없습니다. "
-            "`python -m cheong.main apt-watch` 를 먼저 실행하세요."
-        )
-        with st.expander("자세한 오류"):
-            st.code(error)
-        return
-
-    if not notices:
-        # DB는 있으나 공고가 비어 있는 경우.
-        st.info(
-            "표시할 공고가 없습니다. "
-            "`python -m cheong.main apt-watch` 를 먼저 실행하세요."
-        )
-        if regions or active_only:
-            st.caption("필터(관심지역/진행중만) 때문에 결과가 비었을 수도 있습니다.")
-        return
-
-    st.subheader(f"공고 {len(notices)}건")
-    rows = _to_table_rows(notices)
-    if not rows:
-        st.info("표시 가능한 공고가 없습니다.")
-        return
-    _render_notice_table(rows)
-
-
-# streamlit run 으로 실행하면 스크립트 본문이 top-level 로 평가된다.
-if __name__ == "__main__":
-    main()
-else:
-    # streamlit 은 모듈을 __main__ 이 아닌 이름으로 실행할 수 있어 방어적으로 호출.
-    main()
+        result = eligibility.check_eligibility(청약)
+        gg = result["가점"]
+        st.subheader(f"예상 청약가점 {gg['total']} / 84")
+        st.write("**특별공급 스크리닝**")
+        icon = {"해당가능": "✅", "확인필요": "🟡", "불가": "⛔"}
+        for s in result["특별공급"]:
+            st.write(f"{icon.get(s['판정'], '·')} **{s['유형']}** — {s['판정']} · {s['근거']}")
+        st.write("**일반공급**")
+        st.caption(result["일반공급"]["가점"])
+        st.caption(f"지역: {result['지역']['거주지']} 거주 {result['지역']['거주기간']} "
+                   f"→ {result['지역']['해당지역우선']}")
+        st.caption("⚠️ " + result["caveat"])
+    except Exception as e:  # noqa: BLE001
+        st.error(f"자격 체크 불가: {e} (config.yaml 의 '청약' 값 확인)")
