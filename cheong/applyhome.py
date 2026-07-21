@@ -85,6 +85,7 @@ def _record(it):
         "award": it.get("PRZWNER_PRESNATN_DE", ""),
         "url": it.get("PBLANC_URL") or it.get("HMPG_ADRES", ""),
         "pno": str(it.get("PBLANC_NO", "") or it.get("HOUSE_MANAGE_NO", "")),
+        "source": "청약홈",
     }
 
 
@@ -139,9 +140,14 @@ def format_report(new_notices, upcoming):
     return "\n".join(lines).strip()
 
 
+def source_label(r):
+    """공고 출처 배지: 🏠 LH(임대) / 🏢 청약홈(분양). 알림 전반에서 공용."""
+    return "🏠 LH" if (r or {}).get("source") == "LH" else "🏢 청약홈"
+
+
 def _fmt(r):
     return (
-        f"[{r['type']}] {r['name']}\n"
+        f"{source_label(r)}  [{r['type']}] {r['name']}\n"
         f" · 지역: {r['area']}  ({r['addr']})\n"
         f" · 모집공고일: {r['notice_de']}\n"
         f" · 청약접수: {r['begin']} ~ {r['end']}\n"

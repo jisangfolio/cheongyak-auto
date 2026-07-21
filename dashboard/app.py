@@ -96,9 +96,9 @@ with tab1:
     for r in worth:
         v = ap.applicability(r, 청약)
         with st.container(border=True):
-            src = "LH 임대" if r.get("source") == "LH" else "청약홈 분양"
-            st.markdown(f"**[{r.get('type', '')}] {r.get('name', '')}**  \n"
-                        f":gray[{src} · {r.get('area', '')}]")
+            src = "🏠 LH 임대" if r.get("source") == "LH" else "🏢 청약홈 분양"
+            st.markdown(f"**{src}**  ·  **[{r.get('type', '')}] {r.get('name', '')}**  \n"
+                        f":gray[{r.get('area', '')}]")
             접수 = f"{r.get('begin') or '?'} ~ {r.get('end') or '?'}"
             link = r.get("url", "")
             st.caption(f"청약접수: {접수}"
@@ -148,7 +148,8 @@ with tab2:
             continue  # 발표/마감 지남
         shown += 1
         with st.container(border=True):
-            st.markdown(f"**[{rec.get('type', '')}] {rec.get('name', pno)}**")
+            src = "🏠 LH" if rec.get("source") == "LH" else "🏢 청약홈"
+            st.markdown(f"**{src}  [{rec.get('type', '')}] {rec.get('name', pno)}**")
             if award:
                 st.caption(f"🏆 당첨발표 {award} · {_dday(award)}")
             elif end:

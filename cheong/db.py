@@ -16,9 +16,10 @@ DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "cheongyak.db"
 
 # notices 테이블에 저장하는 컬럼 순서(record dict 키와 동일).
 # detail_json: LH 상세 API 부가정보(단지·공고문파일·접수처) JSON 문자열. 없으면 "".
+# source: 출처("LH" 또는 "청약홈") — 알림/대시보드 배지에 사용.
 _NOTICE_FIELDS = (
     "pno", "name", "area", "type", "addr", "households",
-    "notice_de", "begin", "end", "award", "url", "detail_json",
+    "notice_de", "begin", "end", "award", "url", "detail_json", "source",
 )
 
 
@@ -66,6 +67,7 @@ def init_db(db_path=DEFAULT_DB):
                 award TEXT,
                 url TEXT,
                 detail_json TEXT,
+                source TEXT,
                 first_seen_at TEXT
             )
             """
@@ -90,10 +92,12 @@ def init_db(db_path=DEFAULT_DB):
         cols = [r[1] for r in conn.execute("PRAGMA table_info(applied)").fetchall()]
         if "award_date" not in cols:
             conn.execute("ALTER TABLE applied ADD COLUMN award_date TEXT")
-        # 구버전 notices 테이블에 detail_json 컬럼이 없으면 추가(마이그레이션).
+        # 구버전 notices 테이블에 신규 컬럼이 없으면 추가(마이그레이션).
         ncols = [r[1] for r in conn.execute("PRAGMA table_info(notices)").fetchall()]
         if "detail_json" not in ncols:
             conn.execute("ALTER TABLE notices ADD COLUMN detail_json TEXT")
+        if "source" not in ncols:
+            conn.execute("ALTER TABLE notices ADD COLUMN source TEXT")
         conn.commit()
 
 
@@ -144,8 +148,8 @@ def upsert_notices(records, db_path=DEFAULT_DB):
                     INSERT OR REPLACE INTO notices
                         (pno, name, area, type, addr, households,
                          notice_de, begin, end, award, url, detail_json,
-                         first_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         source, first_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )

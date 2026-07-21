@@ -16,7 +16,7 @@ import argparse
 import time
 from pathlib import Path
 
-from .applyhome import find_matches, format_report
+from .applyhome import find_matches, format_report, source_label
 from .autofill import run_fill
 from .config import get_target, load_config
 from .monitor import is_open
@@ -107,7 +107,7 @@ def _completed_lines(config):  # noqa: ARG001
         elif end:
             dd = (end - today).days
             tail = f"  (마감 {end}" + (f" · D-{dd})" if dd > 0 else " · D-day)")
-        lines.append(f"· [{rec.get('type', '')}] {name[:32]}{tail}")
+        lines.append(f"· {source_label(rec)} [{rec.get('type', '')}] {name[:32]}{tail}")
     return lines
 
 
