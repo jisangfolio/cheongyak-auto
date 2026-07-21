@@ -54,11 +54,11 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # 3) 의존성 설치
+      # 3) 의존성 설치 (apt-watch 에 필요한 것만 — streamlit/playwright 는 불필요)
       - name: 의존성 설치
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install pyyaml requests anthropic
 
       # 4) 설정 파일 생성
       #    Actions 러너에는 config.yaml 이 없다(개인정보라 git 에 미포함).
