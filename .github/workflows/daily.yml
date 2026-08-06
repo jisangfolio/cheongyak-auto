@@ -1,7 +1,8 @@
 # ===========================================================
 #  청약홈 APT 공고 알리미 — 매일 실행 스케줄러 (GitHub Actions)
 #
-#  맥(로컬 launchd/plist) 없이 GitHub 클라우드 러너에서 매일 1회 돌린다.
+#  ⛔ 현재 스케줄 비활성(수동 실행 전용). 아래 `on:` 블록 주석 참고.
+#  맥(로컬 launchd/plist) 없이 GitHub 클라우드 러너에서 1회 돌린다.
 #  - 새 공고 감지 + 접수 임박 리마인더를 이메일로 발송
 #  - 실제 청약 신청(인증서·자격판정)은 자동화 대상이 아님(사람이 직접)
 #
@@ -14,10 +15,16 @@
 name: daily-apt-watch
 
 on:
-  # 매일 UTC 0시(=한국 시간 오전 9시)에 실행
-  schedule:
-    - cron: "0 0 * * *"
-  # Actions 탭에서 수동 실행도 가능
+  # ⛔ 매일 자동 실행은 중단(2026-08-06).
+  #    이유: Secret(APPLYHOME_SERVICE_KEY 등)이 등록되지 않아 2026-07-21 첫 실행부터
+  #          17회 연속 401 Unauthorized 로 실패 → 매일 GitHub '실행 실패' 알림 메일만 발생.
+  #    알림 본체는 맥 로컬 launchd(com.jjpark.cheongyak-auto, 매일 09:00)가 이미 수행 중이라
+  #    이 워크플로는 중복이었다.
+  #    다시 켜려면: Settings → Secrets and variables → Actions 에 위 5개 Secret 등록 후
+  #                 아래 2줄의 주석(#)을 풀고, 먼저 workflow_dispatch 로 1회 수동 성공을 확인할 것.
+  # schedule:
+  #   - cron: "0 0 * * *"     # 매일 UTC 0시(=한국 시간 오전 9시)
+  # Actions 탭에서 수동 실행만 가능
   workflow_dispatch:
 
 # 러너에 최소 권한만 부여(코드 읽기 전용)
