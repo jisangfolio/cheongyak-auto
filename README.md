@@ -80,8 +80,10 @@ Actions → **청약 알리미** → Run workflow → `dry_run` 체크 → 로�
 GitHub Actions 는 해외 IP 라 LH API(`apis.data.go.kr`)가 접속 시간 초과로 막힌다.
 그래서 Actions 는 `CHEONG_SKIP=lh` 로 LH 를 빼고, LH 는 Mac 의 launchd 가 매일 09:07·18:07 에 돌린다.
 ```bash
-bash scripts/install-mac.sh            # 한 번만 (로그: logs/mac-run.log)
+bash scripts/install-mac.sh            # 한 번만 (로그: ~/.cheongyak-auto/logs/mac-run.log)
 ```
+macOS 는 launchd 작업이 Desktop·Documents 안을 못 읽게 막아서, 실행용 복사본을 `~/.cheongyak-auto` 에
+clone 하고 `.env`·`profile.json` 을 복사해 거기서 돌린다(실행 때마다 `git pull`). 둘 중 하나를 바꾸면 다시 설치.
 두 곳 모두 `state/state.json` 을 `python -m cheong.sync` 로 커밋하고, 동시에 push 해 충돌하면
 양쪽 기록을 합친다(중복 알림 없음). Mac 이 꺼져 있던 시간은 깨어날 때 한 번 돈다.
 수집처 고르기: `CHEONG_ONLY=lh` (이것만) / `CHEONG_SKIP=lh,sh` (이것 빼고).
