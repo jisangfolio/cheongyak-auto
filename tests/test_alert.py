@@ -82,6 +82,16 @@ class ParserTest(unittest.TestCase):
         self.assertEqual((n.category, n.posted, n.begin), ("청년안심주택 민간 추가", date(2026, 10, 8), date(2026, 10, 14)))
         self.assertEqual(n.url, "https://soco.seoul.go.kr/youth/bbs/BMSR00015/view.do?optn1=2026-10-08&boardId=6695&menuNo=400008")
 
+    def test_youth_period_from_content(self):
+        c = ('<p>■모집공고 : ‘26. 10. 08. (목)</p><p><span><b>■청약신청 : ‘26. 10. 11. (일) 09:00 ~ 10. 15. (목) 23:00</b>'
+             '</span></p><p>■ 청약신청 페이지 : https://x.com</p>')
+        self.assertEqual(youth.apply_period(c, date(2026, 10, 11)), (date(2026, 10, 11), date(2026, 10, 15)))
+        self.assertEqual(youth.apply_period("■청약신청 : 2026.12.29 ~ 2027.01.03", None),
+                         (date(2026, 12, 29), date(2027, 1, 3)))
+        self.assertEqual(youth.apply_period("■청약신청 : ‘26. 12. 29. ~ 1. 3.", None),
+                         (date(2026, 12, 29), date(2027, 1, 3)))
+        self.assertEqual(youth.apply_period("<p>내용 없음</p>", date(2026, 10, 9)), (date(2026, 10, 9), None))
+
     def test_applyhome_kinds_real_fields(self):
         # 2026-10-13 실제 응답에서 확인한 필드 (공공지원민간임대는 YYYYMMDD · HOUSE_DETAIL_SECD_NM)
         p = applyhome.to_notice({"HOUSE_MANAGE_NO": "2026850051", "PBLANC_NO": "2026850051",
