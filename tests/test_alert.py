@@ -206,3 +206,25 @@ class AccountTest(unittest.TestCase):
         self.assertEqual(judge(n, {**ME, "account_mode": "가입만까지"}, TODAY).level, "추천")
         apt = by_title(evaluate(sample(), {**ME, "account_mode": "가입만까지"}, TODAY), "서울 민영")
         self.assertEqual(apt.level, "제외")
+
+
+class SyncTest(unittest.TestCase):
+    def test_union(self):
+        from cheong.sync import union
+        mine = {"initialized": True, "zero": {"lh": 0}, "seen": {"LH:1": "2026-10-13", "SH:9": "2026-10-14"},
+                "reminded": {"LH:1": ["end"]}}
+        remote = {"initialized": True, "zero": {"lh": 2, "sh": 0}, "seen": {"SH:9": "2026-10-13", "청약홈:x": "2026-10-13"},
+                  "reminded": {"LH:1": ["begin"], "SH:9": ["end"]}}
+        m = union(mine, remote)
+        self.assertEqual(m["seen"], {"LH:1": "2026-10-13", "SH:9": "2026-10-13", "청약홈:x": "2026-10-13"})
+        self.assertEqual(m["reminded"], {"LH:1": ["begin", "end"], "SH:9": ["end"]})
+        self.assertEqual(m["zero"], {"lh": 2, "sh": 0})
+
+    def test_source_filter(self):
+        import os
+        from cheong.main import _source_filter
+        os.environ["CHEONG_SKIP"] = "lh, sh"
+        try:
+            self.assertEqual(_source_filter(), (set(), {"lh", "sh"}))
+        finally:
+            del os.environ["CHEONG_SKIP"]

@@ -40,10 +40,23 @@ def load_config():
     return cfg
 
 
+def _source_filter():
+    """CHEONG_ONLY=lh (이것만) / CHEONG_SKIP=lh (이것 빼고). 쉼표로 여러 개.
+
+    GitHub Actions(해외 IP)에서는 LH(apis.data.go.kr)가 막혀 있어 Actions 는 lh 를 빼고,
+    Mac 은 lh 만 돌린다. 둘이 state/state.json 을 같이 쓴다(cheong.sync).
+    """
+    split = lambda k: {x.strip() for x in os.environ.get(k, "").split(",") if x.strip()}
+    return split("CHEONG_ONLY"), split("CHEONG_SKIP")
+
+
 def collect(cfg, today):
     notices, report = [], {}
+    only, skip = _source_filter()
     for name, mod in ALL.items():
         if not cfg["sources"].get(name, {}).get("enabled", True):
+            continue
+        if (only and name not in only) or name in skip:
             continue
         try:
             got = mod.fetch(cfg, today)
@@ -103,7 +116,7 @@ def cmd_run(args):
     state = State()
     notices, report = collect(cfg, today)
     if not notices:
-        msg = "⚠️ 모든 수집처에서 0건 — API 키나 접속 상태를 확인해 주세요. " + str(report)
+        msg = "⚠️ 수집 0건 — API 키나 접속 상태를 확인해 주세요. " + str(report)
         discord.send(cfg["webhook"], msg, dry_run=args.dry_run)
         return
     first = not state.initialized

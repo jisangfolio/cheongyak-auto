@@ -76,6 +76,16 @@ python -m cheong setup        # 대화형 설문 → profile.json + Secret용 �
 Actions → **청약 알리미** → Run workflow → `dry_run` 체크 → 로그 확인 → 이상 없으면 체크 해제하고 다시 실행.
 이후는 매일 자동. 알림 이력은 `state/state.json` 으로 커밋된다(공고 id·날짜만, 개인정보 없음).
 
+### 6) LH 는 Mac 에서 (선택)
+GitHub Actions 는 해외 IP 라 LH API(`apis.data.go.kr`)가 접속 시간 초과로 막힌다.
+그래서 Actions 는 `CHEONG_SKIP=lh` 로 LH 를 빼고, LH 는 Mac 의 launchd 가 매일 09:07·18:07 에 돌린다.
+```bash
+bash scripts/install-mac.sh            # 한 번만 (로그: logs/mac-run.log)
+```
+두 곳 모두 `state/state.json` 을 `python -m cheong.sync` 로 커밋하고, 동시에 push 해 충돌하면
+양쪽 기록을 합친다(중복 알림 없음). Mac 이 꺼져 있던 시간은 깨어날 때 한 번 돈다.
+수집처 고르기: `CHEONG_ONLY=lh` (이것만) / `CHEONG_SKIP=lh,sh` (이것 빼고).
+
 ## 로컬에서 쓰기
 `.env` 파일에 위 값들을 `KEY=값` 으로 넣고:
 ```bash
@@ -91,20 +101,23 @@ python -m unittest discover -s tests -t .   # 테스트(네트워크 불필요)
 cheong/
   sources/applyhome.py  청약홈 4개 엔드포인트
   sources/lh.py         LH 목록 + 상세(접수일·발표일·주소)
-  sources/sh.py         서울주거포털 SH 임대·분양 표
-  sources/youth.py      청년안심주택 게시판
+  sources/sh.py         서울주거포털 SH 임대·분양 표 + SH 홈페이지 공고 게시판(사회주택 등)
+  sources/youth.py      청년안심주택 게시판(JSON) — 본문에서 마감일까지
   profile.py            설문 / 프로필 로드(PROFILE_JSON → profile.json)
   eligibility.py        추천·확인·제외 판정 규칙
   discord.py            웹훅 임베드
   state.py              알림 이력
+  sync.py               state.json 커밋·push (충돌 시 합치기)
   main.py               CLI (setup / run / preview / test-discord)
 config.yaml             수집처 on/off (비밀값 없음)
+scripts/                Mac launchd (LH 담당) 설치·실행
 .github/workflows/alert.yml
 ```
 
 ## 한계
 - SH 목록엔 접수기간이 없어 게시일·발표일만 쓴다(접수일 리마인더 없음). 게시 21일 뒤엔 종료로 본다.
 - 소득·자산 세부 기준은 공고문 PDF 안에 있어 자동 판정하지 않는다.
+- LH 는 해외 IP 차단으로 Actions 에서 못 읽는다 → Mac 이 꺼져 있으면 그동안 LH 알림이 늦어진다.
 - SH·청년안심은 HTML 파싱이라 사이트 개편 시 깨질 수 있다 → 0건 경고로 알 수 있다.
 
 ## License

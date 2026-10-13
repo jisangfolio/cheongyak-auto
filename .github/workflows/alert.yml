@@ -27,6 +27,7 @@ jobs:
       LH_KEY: ${{ secrets.LH_KEY }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       PROFILE_JSON: ${{ secrets.PROFILE_JSON }}
+      CHEONG_SKIP: lh          # LH(apis.data.go.kr)는 해외 IP 차단 → Mac launchd 가 맡음 (scripts/)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,8 +53,7 @@ jobs:
         run: |
           git config user.name "cheong-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add state/state.json
-          git diff --cached --quiet || (git commit -m "state: $(date -u +%F)" && git push)
+          python -m cheong.sync "state: actions $(date -u +%F)"
 
       - name: 실패 알림
         if: failure() && env.DISCORD_WEBHOOK_URL != ''
