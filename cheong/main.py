@@ -34,11 +34,9 @@ def _load_dotenv():
 def load_config():
     _load_dotenv()
     cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8")) or {}
-    cfg["keys"] = {
-        "applyhome": os.environ.get("APPLYHOME_KEY", ""),
-        "lh": os.environ.get("LH_KEY", ""),
-    }
-    cfg["webhook"] = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    env = lambda k: os.environ.get(k, "").strip()   # Secret 붙여넣기 때 딸려 온 줄바꿈 제거
+    cfg["keys"] = {"applyhome": env("APPLYHOME_KEY"), "lh": env("LH_KEY")}
+    cfg["webhook"] = env("DISCORD_WEBHOOK_URL")
     return cfg
 
 
