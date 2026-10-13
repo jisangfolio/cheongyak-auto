@@ -1,0 +1,62 @@
+name: 청약 알리미
+
+on:
+  schedule:
+    - cron: "47 23 * * *"   # 매일 08:47 KST
+    - cron: "47 8 * * *"    # 매일 17:47 KST
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "보내지 않고 로그로만 확인"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write            # state/state.json 커밋용
+
+concurrency:
+  group: cheong-alert
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      APPLYHOME_KEY: ${{ secrets.APPLYHOME_KEY }}
+      LH_KEY: ${{ secrets.LH_KEY }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      PROFILE_JSON: ${{ secrets.PROFILE_JSON }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: 필수 Secret 확인
+        run: |
+          missing=""
+          [ -z "$DISCORD_WEBHOOK_URL" ] && missing="$missing DISCORD_WEBHOOK_URL"
+          [ -z "$PROFILE_JSON" ] && missing="$missing PROFILE_JSON"
+          if [ -n "$missing" ]; then echo "::error::Secret 없음:$missing"; exit 1; fi
+          [ -z "$APPLYHOME_KEY" ] && echo "::warning::APPLYHOME_KEY 없음 → 청약홈·LH 건너뜀"
+          true
+
+      - name: 알리미 실행
+        run: python -m cheong run ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: 상태 저장
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "cheong-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state/state.json
+          git diff --cached --quiet || (git commit -m "state: $(date -u +%F)" && git push)
+
+      - name: 실패 알림
+        if: failure() && env.DISCORD_WEBHOOK_URL != ''
+        run: |
+          curl -s -H "Content-Type: application/json" -X POST "$DISCORD_WEBHOOK_URL" \
+            -d "{\"username\":\"청약 알리미\",\"content\":\"❌ 실행 실패 — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"

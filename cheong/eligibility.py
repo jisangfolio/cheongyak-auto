@@ -1,255 +1,193 @@
-"""청약 자격 사전 체커 (참고용 · 공식 판정 아님).
+"""공고 × 내 프로필 → 추천 / 확인 / 제외.
 
-사용자 프로필(config 의 '청약' 블록)로 특별공급 유형별 해당 가능성과
-가점(만 30세 규칙 반영)을 규칙 기반으로 스크리닝한다.
-
-⚠️ 한계: 실제 자격은 청약홈이 정부 기록으로 자동 판정한다. 소득기준·지역 거주요건·
-자산요건·청약통장 납입 인정 등은 유형/연도/지역마다 다르고 매년 바뀐다.
-따라서 이 결과는 '놓치지 않게 걸러주는 참고'이며, 구조적으로 불가능한 것만 '불가',
-문턱값에 의존하는 것은 '확인필요'로 표기한다. 최종 확인·신청은 본인이 청약홈에서.
+원칙: 공고 목록에는 제목·유형 정도만 있어서 세부 소득·자산 기준은 알 수 없다.
+그래서 '구조적으로 확실히 안 되는 것'만 제외하고, 애매하면 '확인'으로 살린다.
+(잘못 걸러서 놓치는 손해 > 알림 하나 더 받는 손해)
 """
-from datetime import date
+import re
+from dataclasses import dataclass, field
 
-CAVEAT = ("참고용 규칙기반 스크리닝입니다. 소득·자산·지역 거주요건·통장 납입 인정 등은 "
-          "유형/연도/지역마다 다르고, 과거 주택 소유·처분 이력이 있으면 무주택기간이 실제와 다를 수 있습니다. "
-          "최종 자격 판정은 청약홈·공고문에서 본인이 확인해야 합니다.")
+from .models import Notice
+from .profile import age as calc_age
 
+LEVELS = {"추천": 2, "확인": 1, "제외": 0, "무시": -1}
 
-def _plus_years(d, years):
-    """윤년 2/29 방어: 만 N세 도래일 계산(평년이면 2/28로)."""
-    try:
-        return date(d.year + years, d.month, d.day)
-    except ValueError:
-        return date(d.year + years, d.month, 28)
+# 모집이 아닌 후속 안내(결과·서류·계약)는 알림 대상이 아니다
+NOISE = re.compile(r"당첨자|서류심사|서류제출|계약\s*(체결|안내|일정)|결과\s*(발표|안내|공고)|순번|합격자|명단|동호수|정산")
+RECRUIT = re.compile(r"모집|청약\s*접수|접수\s*안내|입주자\s*선정|공급")
 
 
-def _parse_ym(s):
-    """생년월일/전입일 문자열을 date로. YYYY-MM-DD·YYYY-MM·YYMMDD·YYYYMMDD 지원. 실패 None."""
-    if not s:
-        return None
-    s = str(s).strip().replace(".", "-").replace("/", "-")
-    try:
-        if "-" in s:  # 구분자 있으면 YYYY-MM-DD / YYYY-MM
-            parts = s.split("-")
-            if len(parts) >= 3:
-                return date(int(parts[0]), int(parts[1]), int(parts[2]))
-            if len(parts) == 2:
-                return date(int(parts[0]), int(parts[1]), 1)
-            return None
-        if len(s) == 6:  # YYMMDD (00~30 → 2000년대)
-            yy = int(s[:2])
-            year = 2000 + yy if yy <= 30 else 1900 + yy
-            return date(year, int(s[2:4]), int(s[4:6]))
-        if len(s) == 8:  # YYYYMMDD
-            return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
-    except (ValueError, IndexError):
-        return None
-    return None
+@dataclass
+class Verdict:
+    level: str
+    kind: str                       # 임대 / 공공분양 / 민영분양 / 오피스텔 / 민간임대
+    reasons: list = field(default_factory=list)
+    tips: list = field(default_factory=list)
+    account: str = "확인"            # 청약통장: 불필요 / 가입만 / 사용 / 확인
+
+    @property
+    def score(self):
+        return LEVELS[self.level]
 
 
-def _age(birth, today=None):
-    today = today or date.today()
-    if not birth:
-        return None
-    return today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day))
+def _has(t, *words):
+    return any(w in t for w in words)
 
 
-def _years_between(d, today=None):
-    today = today or date.today()
-    if not d:
-        return None
-    return round((today - d).days / 365.25, 2)
+def kind_of(n: Notice) -> str:
+    t = n.text
+    if n.source == "청약홈":
+        if _has(t, "오피스텔", "도시형"):
+            return "오피스텔"
+        if _has(t, "민간임대"):
+            return "민간임대"
+        if _has(t, "국민", "공공", "신혼희망", "뉴:홈", "뉴홈"):
+            return "공공분양"
+        return "민영분양"
+    if n.source == "SH" and n.extra.get("board") == "publicSale":
+        return "공공분양"
+    if n.source == "LH" and _has(t, "분양") and not _has(t, "임대"):
+        return "공공분양"
+    return "임대"
 
 
-def _is_single(profile):
-    """미혼 여부. 혼인상태='미혼' 또는 혼인신고일 없음."""
-    status = str(profile.get("혼인상태", "")).strip()
-    if status in ("미혼", "single", ""):
-        return not profile.get("혼인신고일")
-    return False
+# 청약통장: 지원할 때 통장이 쓰이는가 (일반 규정 기준 — 공고마다 예외 가능)
+#   불필요 : 통장 없이 지원
+#   가입만 : 가입 사실만 확인, 당첨돼도 통장 유지 (임대)
+#   사용   : 당첨되면 통장 효력 소멸 (분양·분양전환 임대)
+#   확인   : 분류 불가 → 공고문 확인
+ACCOUNT_FREE = ("매입임대", "전세임대", "든든전세", "청년안심", "역세권", "민간임대", "오피스텔",
+                "도시형", "무순위", "잔여", "임의공급", "희망하우징", "기숙사", "영구임대",
+                "사회주택", "수요자맞춤형")
+ACCOUNT_USE = ("신혼희망타운", "공공분양", "뉴홈", "뉴:홈", "분양전환", "10년 공공임대", "5년 공공임대")
+ACCOUNT_KEEP = ("행복주택", "국민임대", "국민공공임대")
+ACCOUNT_LABEL = {
+    "불필요": "🟢 필요 없음",
+    "가입만": "🔵 가입만 필요 — 당첨돼도 통장 유지",
+    "사용": "🔴 사용 — 당첨되면 통장 효력 소멸",
+    "확인": "⚪ 공고문에서 확인",
+}
+# account_mode: 어떤 공고를 아예 빼는지 (기본은 빼지 않고 표시만)
+ACCOUNT_MODES = {"불필요만": ("사용", "가입만"), "가입만까지": ("사용",), "상관없음": ()}
 
 
-def no_house_counted_years(profile, today=None):
-    """가점 산정용 무주택기간(년). 무주택기간은 만 30세부터, 기혼은 혼인신고일부터 카운트.
-
-    - 유주택이면 0
-    - 미혼·만30세 미만이면 0 (평생 무주택이어도 가점상 0)
-    - 미혼·만30세 이상이면 (오늘 - 만30세)
-    - 기혼이면 (오늘 - max(만30세, 혼인신고일))
-    """
-    today = today or date.today()
-    if not profile.get("무주택", True):
-        return 0.0
-    birth = _parse_ym(profile.get("생년월일"))
-    if not birth:
-        return None  # 정보부족
-    thirty = _plus_years(birth, 30)
-    marriage = _parse_ym(profile.get("혼인신고일"))
-    # 산정시작 = 만30세 도래일. 단 만30세 이전에 혼인했으면 혼인신고일부터.
-    start = min(thirty, marriage) if marriage else thirty
-    if today <= start:
-        return 0.0
-    return round((today - start).days / 365.25, 2)
+def account_need(n: Notice, kind: str) -> str:
+    t = n.text
+    if _has(t, *ACCOUNT_FREE) or kind in ("오피스텔", "민간임대"):
+        return "불필요"
+    if _has(t, *ACCOUNT_USE) or kind in ("공공분양", "민영분양"):
+        return "사용"
+    if _has(t, *ACCOUNT_KEEP):
+        return "가입만"
+    return "확인"
 
 
-def _no_house_applicable(profile, today=None):
-    """무주택 가점 산정 대상 여부: 무주택 & (만30세 이상 또는 기혼)."""
-    today = today or date.today()
-    if not profile.get("무주택", True):
-        return False
-    if not _is_single(profile) or profile.get("혼인신고일"):
-        return True
-    age = _age(_parse_ym(profile.get("생년월일")), today)
-    return age is not None and age >= 30
+def judge(n: Notice, p: dict, today) -> Verdict:
+    t = n.text
+    kind = kind_of(n)
+    a = calc_age(p, today)
+    marital = p.get("marital", "미혼")
+    single = marital == "미혼"
+    newly = marital in ("예비신혼", "신혼") or p.get("newborn") or p.get("single_parent")
+    v = Verdict("확인", kind)
 
+    def out(reason):
+        v.level, v.reasons = "제외", [reason]
+        return v
 
-def gajeom(profile, today=None):
-    """만30세 규칙을 반영한 실제 청약가점을 계산해 반환(cheong.gajeom 위임).
+    # 0) 후속 안내는 무시
+    if NOISE.search(n.title) and not RECRUIT.search(n.title.split("결과")[-1]):
+        v.level, v.reasons = "무시", ["모집이 아닌 후속 안내"]
+        return v
 
-    무주택 가점 산정 대상이 아니면(만30세 미만 미혼/유주택) 무주택 항목을 0점으로 보정한다
-    ('무주택 1년 미만 2점'과 '산정 제외 0점'은 다르기 때문).
-    """
-    from .gajeom import calc_gajeom
-    today = today or date.today()
-    nh = no_house_counted_years(profile, today) or 0.0
-    r = calc_gajeom(nh, profile.get("부양가족", 0) or 0, profile.get("청약통장기간", 0) or 0)
-    if not _no_house_applicable(profile, today):
-        diff = r["breakdown"]["no_house"]
-        r["breakdown"]["no_house"] = 0
-        r["total"] = r["total"] - diff
-        if isinstance(r.get("detail"), dict):
-            r["detail"]["no_house"] = "만 30세 미만 미혼(또는 유주택) → 무주택 가점 산정 제외(0점)"
-    return r
+    # 1) 지역·관심 유형
+    regions = p.get("regions") or []
+    if regions and n.region and n.region not in regions:
+        return out(f"관심 지역 아님({n.region})")
+    if not (p.get("want") or {}).get(kind, True):
+        return out(f"관심 유형 아님({kind})")
 
+    # 1-1) 청약통장
+    v.account = account_need(n, kind)
+    blocked = ACCOUNT_MODES.get(p.get("account_mode", "상관없음"), ())
+    if v.account in blocked:
+        return out("청약통장을 쓰는 공고" if v.account == "사용" else "청약통장 가입이 필요한 공고")
 
-def _v(verdict, reason, checks=None):
-    return {"판정": verdict, "근거": reason, "확인필요": checks or []}
+    # 2) 무주택
+    if not p.get("homeless", True) and kind not in ("오피스텔", "민간임대"):
+        return out("유주택자는 대부분 지원 불가")
 
+    # 3) 대상 계층이 정해진 공고
+    if _has(t, "신혼", "신생아", "미리내집", "예비신혼"):
+        if not newly:
+            return out("신혼·신생아·예비신혼·한부모 대상")
+        v.level = "추천"
+        v.reasons.append("신혼·신생아 대상에 해당")
+    if _has(t, "고령자", "어르신", "은빛", "노인", "실버"):
+        if a is None or a < 65:
+            return out("만 65세 이상 고령자 대상")
+    if _has(t, "장애인") and not p.get("disabled"):
+        return out("장애인 대상")
+    if _has(t, "영구임대", "수급자", "주거취약", "쪽방", "비주택") and not p.get("low_income"):
+        return out("수급자·저소득 취약계층 대상")
+    if _has(t, "예술인", "창업가") and not p.get("artist_or_startup"):
+        return out("예술인·청년창업가 대상")
+    if _has(t, "다자녀", "다둥이") and int(p.get("children") or 0) < 2:
+        return out("다자녀 대상")
+    if _has(t, "대학생", "희망하우징", "공공기숙사") and not _has(t, "청년") and not p.get("student"):
+        return out("대학생 대상")
 
-def check_eligibility(profile, record=None, today=None):
-    """특별공급 유형별 + 일반공급 + 지역 스크리닝 결과 dict 반환."""
-    today = today or date.today()
-    birth = _parse_ym(profile.get("생년월일"))
-    age = _age(birth, today)
-    single = _is_single(profile)
-    kids = int(profile.get("자녀수", 0) or 0)
-    no_house = bool(profile.get("무주택", True))
-    first_home = bool(profile.get("생애최초", False))
-    parents_care = bool(profile.get("노부모부양", False))
-    account_y = profile.get("청약통장기간", 0) or 0
-    move_in = _parse_ym(profile.get("거주전입일"))
-    reside_y = _years_between(move_in, today)
+    youth_ok = a is not None and 19 <= a <= 39
+    if _has(t, "청년"):
+        if a is not None and not youth_ok:
+            return out("만 19~39세 청년 대상")
+        v.level = "추천"
+        v.reasons.append("청년 대상" + (f"(만 {a}세)" if a is not None else ""))
 
-    sp = []  # 특별공급 유형별 판정
+    # 4) 유형별 판단
+    if kind == "임대":
+        if _has(t, "든든전세"):
+            v.level = "추천"
+            v.reasons.append("든든전세: 무주택이면 소득·자산 무관")
+        elif _has(t, "행복주택"):
+            if youth_ok and single:
+                v.level = "추천"
+                v.reasons.append("행복주택 청년 계층 지원 가능")
+            v.tips.append("청년 계층은 소득·자산 기준 있음 — 공고문 확인")
+        elif _has(t, "장기전세"):
+            v.reasons.append("장기전세: 무주택 세대 + 소득·자산 기준")
+            if not p.get("household_homeless", True):
+                v.tips.append("세대원 중 주택 소유자가 있으면 불가")
+        elif _has(t, "국민임대", "국민공공임대", "통합공공임대"):
+            v.reasons.append("소득 기준(국민임대는 도시근로자 70% 안팎) 확인 필요")
+        elif _has(t, "재개발임대"):
+            v.reasons.append("재개발임대: 철거세입자 우선, 일반은 저소득 위주")
+        elif _has(t, "매입임대", "전세임대") and not v.reasons:
+            v.reasons.append("일반 매입·전세임대는 수급자·저소득 우선 — 순위 확인")
+        elif n.source == "청년안심":
+            v.level = "추천"
+        if not v.reasons:
+            v.reasons.append("임대 공고 — 자격 요건 공고문 확인")
+    elif kind == "공공분양":
+        if youth_ok and single and not p.get("ever_owned"):
+            v.level = "추천"
+            v.reasons.append("청년 특별공급 대상 구조(만19~39·미혼·무주택)")
+        elif not p.get("ever_owned"):
+            v.reasons.append("생애최초·일반공급 가능성")
+        if int(p.get("account_years") or 0) < 2:
+            v.tips.append("수도권 공공분양 1순위는 통장 2년·24회 이상 필요(특공은 6개월)")
+        if p.get("household") != "단독세대주" and not p.get("household_homeless", True):
+            v.tips.append("세대원 중 유주택자가 있으면 일반공급 불리 → 세대분리 검토")
+    elif kind == "민영분양":
+        if _has(t, "무순위", "잔여"):
+            v.reasons.append("무순위: 무주택 + 해당 지역 거주 요건 확인")
+        else:
+            v.reasons.append("민영 APT: 추첨제 물량 위주로 노려볼 만함")
+        if a is not None and a < 30 and single:
+            v.tips.append("만 30세 전 미혼은 무주택 가점 0점 → 가점제보다 추첨제")
+        if not p.get("household_homeless", True):
+            v.tips.append("세대원 유주택이면 1순위 제한될 수 있음")
+    elif kind in ("오피스텔", "민간임대"):
+        v.reasons.append(f"{kind}: 청약통장·무주택 요건이 느슨함")
 
-    # 청년 특별공급(뉴:홈 등 공공): 만19~39 미혼 무주택 + 소득/자산 요건
-    if age is None:
-        sp.append({"유형": "청년", **_v("확인필요", "생년월일 정보 필요")})
-    elif 19 <= age <= 39 and single and no_house:
-        sp.append({"유형": "청년", **_v(
-            "해당가능", f"만 {age}세·미혼·무주택 → 청년 특공 대상 구조 충족",
-            ["소득/자산 요건(유형별 상이)", "청약통장 가입기간·납입 인정", "공공분양(뉴:홈 등)에 주로 존재"])})
-    else:
-        why = []
-        if age is not None and not (19 <= age <= 39):
-            why.append(f"나이 만{age}세(대상 19~39 벗어남)")
-        if not single:
-            why.append("미혼 아님")
-        if not no_house:
-            why.append("무주택 아님")
-        sp.append({"유형": "청년", **_v("불가", " / ".join(why) or "요건 미충족")})
-
-    # 생애최초 특별공급: 무주택 + 생애최초 + 소득요건 (미혼 1인가구는 공공 추첨 유형 위주)
-    if no_house and first_home:
-        checks = ["소득요건(도시근로자 월평균소득 대비)", "청약통장 요건", "세대주 여부"]
-        note = "무주택·생애최초 구조는 충족"
-        if single:
-            note += " (미혼 1인가구는 공공분양 추첨 유형 등으로 제한적 → 유형 확인 필수)"
-        sp.append({"유형": "생애최초", **_v("확인필요", note, checks)})
-    else:
-        sp.append({"유형": "생애최초", **_v(
-            "불가", "무주택+생애최초 요건 미충족" if not (no_house and first_home) else "요건 미충족")})
-
-    # 신혼부부: 혼인 7년 이내
-    if single:
-        sp.append({"유형": "신혼부부", **_v("불가", "미혼(혼인 7년 이내 세대 대상)")})
-    else:
-        sp.append({"유형": "신혼부부", **_v("확인필요", "혼인기간 7년 이내/소득/자녀 요건 확인",
-                                          ["혼인신고일 7년 이내", "소득요건"])})
-
-    # 다자녀: 미성년 자녀 2명 이상(개편)/3명
-    if kids >= 2:
-        sp.append({"유형": "다자녀", **_v("확인필요", f"미성년 자녀 {kids}명 → 요건 확인",
-                                        ["자녀 수 기준(2명/3명, 공고별)", "소득요건"])})
-    else:
-        sp.append({"유형": "다자녀", **_v("불가", f"미성년 자녀 {kids}명(2명 이상 필요)")})
-
-    # 노부모부양: 65세+ 직계존속 3년+ 부양 세대주
-    sp.append({"유형": "노부모부양", **_v(
-        "확인필요" if parents_care else "불가",
-        "노부모부양 세대주 요건 확인" if parents_care else "해당 없음(65세+ 직계존속 3년+ 부양 세대주 아님)")})
-
-    # 일반공급 가점제 상황
-    g = gajeom(profile, today)
-    nh = no_house_counted_years(profile, today)
-    gajeom_note = f"청약가점 약 {g['total']}점/84 (무주택 {g['breakdown']['no_house']}·부양 {g['breakdown']['dependents']}·통장 {g['breakdown']['account']})"
-    if nh == 0.0 and single and age is not None and age < 30:
-        gajeom_note += " — 만30세 미만 미혼이라 무주택 가점 0. 가점제(민영 인기단지)보다 추첨제·청년특공이 현실적."
-    general = {
-        "가점": gajeom_note,
-        "통장기간_1순위": (f"가입기간 {account_y}년 → 1순위 가입기간 요건 충족 가능(지역별 기준 상이, 공고 확인)"
-                       if account_y and account_y >= 2
-                       else "가입기간 짧아 1순위 요건 확인필요(지역별 상이)"),
-        "확인필요": ["국민주택은 납입 횟수·인정금액이 순위에 중요(납입 불성실 시 불리)"],
-    }
-
-    # 지역 우선공급
-    region = {
-        "거주지": profile.get("거주지역", "미상"),
-        "거주기간": (f"약 {reside_y}년" if reside_y is not None else "미상"),
-    }
-    if reside_y is not None and reside_y < 1:
-        region["해당지역우선"] = "미충족 가능 — 해당지역 우선공급은 통상 일정 거주기간 필요(대개 1~2년). 현재 기타지역 물량 위주일 수 있음. 공고문 확인."
-    else:
-        region["해당지역우선"] = "거주기간 요건 확인필요(지역/공고별 상이)"
-
-    return {
-        "나이": age,
-        "무주택산정기간": nh,
-        "가점": g,
-        "특별공급": sp,
-        "일반공급": general,
-        "지역": region,
-        "caveat": CAVEAT,
-    }
-
-
-def summarize(result):
-    """check_eligibility 결과를 사람이 읽는 텍스트로."""
-    lines = []
-    age = result.get("나이")
-    lines.append(f"■ 청약 자격 사전 체크 (만 {age}세)" if age is not None else "■ 청약 자격 사전 체크")
-    g = result["가점"]
-    lines.append(f"· 예상 청약가점: {g['total']}/84  "
-                 f"(무주택 {g['breakdown']['no_house']} · 부양 {g['breakdown']['dependents']} · 통장 {g['breakdown']['account']})")
-    lines.append("")
-    lines.append("[특별공급 스크리닝]")
-    icon = {"해당가능": "✅", "확인필요": "🟡", "불가": "⛔"}
-    for s in result["특별공급"]:
-        head = f"  {icon.get(s['판정'], '·')} {s['유형']}: {s['판정']} — {s['근거']}"
-        lines.append(head)
-        for c in s.get("확인필요", []):
-            lines.append(f"       · 확인: {c}")
-    lines.append("")
-    lines.append("[일반공급]")
-    lines.append(f"  · {result['일반공급']['가점']}")
-    lines.append(f"  · 1순위: {result['일반공급']['통장기간_1순위']}")
-    for c in result["일반공급"].get("확인필요", []):
-        lines.append(f"  · 확인: {c}")
-    lines.append("")
-    lines.append("[지역]")
-    r = result["지역"]
-    lines.append(f"  · {r['거주지']} 거주 {r['거주기간']} → {r['해당지역우선']}")
-    lines.append("")
-    lines.append(f"⚠️ {result['caveat']}")
-    return "\n".join(lines)
+    return v

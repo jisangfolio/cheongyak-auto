@@ -1,0 +1,18 @@
+# 수집처 설정 (비밀값 없음 — 커밋해도 됨)
+# 비밀값은 환경변수/GitHub Secret 으로: APPLYHOME_KEY, LH_KEY, DISCORD_WEBHOOK_URL, PROFILE_JSON
+sources:
+  applyhome:
+    enabled: true
+    kinds: [apt, remndr, urbty, pvtrent]   # APT · 무순위 · 오피스텔/민간임대 · 공공지원민간임대
+    lookback_days: 60
+  lh:
+    enabled: true
+    upp_types: ["06", "13"]               # 06 임대주택, 13 주거복지(매입·전세임대, 든든전세)
+    max_pages: 5
+    detail_limit: 40
+  sh:
+    enabled: true
+    pages: 2
+  youth:
+    enabled: true
+    pages: 2

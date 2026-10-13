@@ -1,461 +1,177 @@
-"""CLI 진입점.
+"""CLI.
 
-청약홈(아파트 청약) 명령:
-  python -m cheong.main apt-watch      # 새 공고/접수임박 확인 → 이메일 알림 + DB 반영
-  python -m cheong.main sync-db        # 관심지역 공고 전체를 DB에 적재(+기존 seen 이관)
-  python -m cheong.main gajeom         # 청약가점 계산(config 의 '청약' 값 사용)
-  python -m cheong.main brief <공고번호>   # LLM 공고 브리핑(키 없으면 템플릿)
-  python -m cheong.main predict <공고번호> # 당첨 가능성 휴리스틱 추정
-  python -m cheong.main test-notify    # 알림 설정 점검
-
-응모 폼 자동입력(부가):
-  python -m cheong.main watch <타겟> [--interval 60] [--autofill]
-  python -m cheong.main fill  <타겟>
+  python -m cheong setup           처음 한 번: 설문 → profile.json
+  python -m cheong run             수집 → 판정 → 새 공고·리마인더를 디스코드로 (상태 저장)
+  python -m cheong run --dry-run   보내지 않고 화면에만 출력 (상태도 저장 안 함)
+  python -m cheong preview         지금 진행 중인 공고 전체와 판정 이유(제외 포함) 보기
+  python -m cheong test-discord    웹훅 연결 확인
 """
 import argparse
-import time
+import os
+from datetime import timedelta
 from pathlib import Path
 
-from .applyhome import find_matches, format_report, source_label
-from .autofill import run_fill
-from .config import get_target, load_config
-from .monitor import is_open
-from .notify import notify
+import yaml
 
-_SEEN_FILE = Path(__file__).resolve().parent.parent / ".seen_pblanc.json"
+from . import discord, profile
+from .eligibility import LEVELS, judge
+from .sources import ALL
+from .state import State
+from .util import today_kst
 
-
-# ---------- 공용 헬퍼 ----------
-def _cheong_cfg(config):
-    """config 의 '청약' 블록(무주택기간/부양가족/청약통장기간/희망지역)."""
-    return config.get("청약", {}) or {}
+ROOT = Path(__file__).resolve().parent.parent
 
 
-def _my_gajeom(config):
-    """청약가점 총점 계산(만 30세 규칙 반영). 실패 시 None."""
-    try:
-        from . import eligibility
-        return eligibility.gajeom(_cheong_cfg(config))["total"]
-    except Exception:  # noqa: BLE001
-        return None
+def _load_dotenv():
+    f = ROOT / ".env"
+    if f.exists():
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
-def _brief_profile(config):
-    """브리핑용 사용자 프로필(무주택 산정기간·청약가점 포함)."""
-    from . import eligibility
-    c = _cheong_cfg(config)
-    nh = eligibility.no_house_counted_years(c)
-    profile = {
-        "무주택기간": (f"{nh}년(가점 산정)" if nh is not None else c.get("무주택")),
-        "부양가족": c.get("부양가족"),
-        "청약통장기간": c.get("청약통장기간"),
-        "희망지역": c.get("희망지역"),
+def load_config():
+    _load_dotenv()
+    cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8")) or {}
+    cfg["keys"] = {
+        "applyhome": os.environ.get("APPLYHOME_KEY", ""),
+        "lh": os.environ.get("LH_KEY", ""),
     }
-    g = _my_gajeom(config)
-    if g is not None:
-        profile["청약가점"] = g
-    return profile
+    cfg["webhook"] = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    return cfg
 
 
-def _fetch_region_records(config):
-    """청약홈 API 에서 관심지역 공고 레코드를 모두 가져온다(applyhome 내부 재사용)."""
-    from .applyhome import _fetch_all, _record
-    ah = config["applyhome"]
-    regions = ah.get("regions") or []
-    items = _fetch_all(ah["service_key"], int(ah.get("per_page", 500)))
-    out = []
-    for it in items:
-        rec = _record(it)
-        if regions and not any(rg in rec["area"] for rg in regions):
+def collect(cfg, today):
+    notices, report = [], {}
+    for name, mod in ALL.items():
+        if not cfg["sources"].get(name, {}).get("enabled", True):
             continue
-        out.append(rec)
+        try:
+            got = mod.fetch(cfg, today)
+        except Exception as e:  # noqa: BLE001 - 한 수집처 실패가 전체를 막지 않게
+            print(f"[{name}] 실패: {e}")
+            got = []
+        report[name] = len(got)
+        notices.extend(got)
+    print("[수집] " + ", ".join(f"{k} {v}건" for k, v in report.items()))
+    return notices, report
+
+
+def evaluate(notices, prof, today):
+    """마감 안 된 공고만 판정해서 (공고, 판정) 목록으로."""
+    out = []
+    for n in notices:
+        if n.is_closed(today):
+            continue
+        out.append((n, judge(n, prof, today)))
     return out
 
 
-def _find_notice(pno):
-    """DB 에서 공고번호로 레코드 1건을 찾는다(없으면 None)."""
-    from . import db
-    for n in db.get_notices():
-        if str(n.get("pno")) == str(pno):
-            return n
-    return None
-
-
-# ---------- 명령 ----------
-def _completed_lines(config):  # noqa: ARG001
-    """신청 완료로 표시된 공고 중 아직 발표·마감 전인 것을 한 줄씩 반환."""
-    from datetime import date
-    from . import db
-    applied = db.get_applied()
-    if not applied:
-        return []
-    notices = {str(n["pno"]): n for n in db.get_notices()}
-    today = date.today()
-    lines = []
-    for pno, manual_award in applied.items():
-        rec = notices.get(str(pno)) or {}
-        name = str(rec.get("name", "")) or f"공고 {pno}"
-        award = db._parse_date(manual_award) or db._parse_date(rec.get("award"))
-        end = db._parse_date(rec.get("end"))
-        ref = award or end
-        if ref is not None and ref < today:
-            continue  # 발표/마감 지남 → 완료 목록에서 자동 제외
-        tail = ""
-        if award:
-            dd = (award - today).days
-            tail = f"  (발표 {award}" + (f" · D-{dd})" if dd > 0 else " · D-day)")
-        elif end:
-            dd = (end - today).days
-            tail = f"  (마감 {end}" + (f" · D-{dd})" if dd > 0 else " · D-day)")
-        lines.append(f"· {source_label(rec)} [{rec.get('type', '')}] {name[:32]}{tail}")
-    return lines
-
-
-def _apt_body(config, new_notices, upcoming):
-    """지원가치 필터 + 출처별 섹션 분리 + 신청 완료 섹션 이메일 본문.
-
-    (본문, 유지건수, 제외건수) 반환. 이미 '신청 완료'한 공고는 재알림에서 제외.
-    """
-    from .applyhome import _fmt
-    from . import applicability as ap, db
-    import json
-    profile = _cheong_cfg(config)
-    applied = set(db.get_applied())
-    excluded = []
-
-    def _lh_extra(r):
-        """LH 상세 보강값(발표일·접수방법)을 이메일 줄로."""
-        lines = []
-        if r.get("award"):
-            lines.append(" · 🏆 당첨발표 " + str(r["award"]))
-        raw = r.get("detail_json")
-        if raw:
-            try:
-                d = json.loads(raw)
-            except (TypeError, ValueError):
-                d = {}
-            places = d.get("apply_places") or []
-            if places:
-                p = places[0]
-                where = p.get("place", "")
-                guide = (p.get("guide", "") or "").replace("\n", " ").strip()
-                txt = where or guide
-                if txt:
-                    lines.append(" · 📍 접수 " + txt[:50])
-        return lines
-
-    def _render(recs):
-        kept = []
-        for r in recs:
-            if str(r.get("pno", "")) in applied:
-                continue  # 이미 신청 완료 → '지원해라' 재알림 안 함
-            v = ap.applicability(r, profile)
-            if not v["worth"]:
-                excluded.append(f"· {str(r.get('name', ''))[:34]} — {v['reason']}")
-                continue
-            block = _fmt(r).rstrip() + "\n · " + ap.one_liner(r, profile)
-            if v.get("note"):
-                block += "\n · ▸ " + v["note"]
-            for extra in _lh_extra(r):
-                block += "\n" + extra
-            kept.append(block)
-        return kept
-
-    def _is_lh(r):
-        return r.get("source") == "LH"
-
-    groups = [
-        ("🏢 청약홈 (분양)", [r for r in new_notices if not _is_lh(r)],
-                             [r for r in upcoming if not _is_lh(r)]),
-        ("🏠 LH (임대)",     [r for r in new_notices if _is_lh(r)],
-                             [r for r in upcoming if _is_lh(r)]),
-    ]
-    out, total = [], 0
-    for title, news, ups in groups:
-        kept_new, kept_up = _render(news), _render(ups)
-        if not (kept_new or kept_up):
+def plan(evaluated, prof, state, today):
+    """보낼 것 정하기: (새 공고, 리마인더). 상태도 갱신한다."""
+    min_score = LEVELS.get(prof.get("min_level", "확인"), 1)
+    days = int(prof.get("remind_days", 2))
+    new, remind = [], []
+    for n, v in evaluated:
+        if v.level == "무시":
             continue
-        out.append("━" * 22)
-        out.append(title)
-        out.append("━" * 22)
-        if kept_new:
-            out.append(f"🆕 새 공고 {len(kept_new)}건")
-            out.append("\n\n".join(kept_new))
-        if kept_up:
-            out.append(f"\n⏰ 임박 {len(kept_up)}건")
-            out.append("\n\n".join(kept_up))
-        out.append("")
-        total += len(kept_new) + len(kept_up)
+        ok = v.score >= min_score
+        if state.is_new(n.key):
+            state.mark_seen(n.key, today)
+            if ok:
+                new.append((n, v))
+            continue
+        if not ok:
+            continue
+        if n.begin and today <= n.begin <= today + timedelta(days=days) \
+                and not state.was_reminded(n.key, "begin"):
+            state.mark_reminded(n.key, "begin")
+            dd = (n.begin - today).days
+            remind.append((n, v, "오늘 접수 시작!" if dd == 0 else f"접수 시작 D-{dd}"))
+        elif n.end and today <= n.end <= today + timedelta(days=days) \
+                and not state.was_reminded(n.key, "end") \
+                and not (state.was_reminded(n.key, "begin") and n.begin
+                         and (n.end - n.begin).days <= days):   # 짧은 접수는 한 번만
+            state.mark_reminded(n.key, "end")
+            dd = (n.end - today).days
+            remind.append((n, v, "오늘 마감!" if dd == 0 else f"마감 D-{dd}"))
+    new.sort(key=lambda x: (-x[1].score, x[0].begin or x[0].end or today))
+    return new, remind
 
-    comp = _completed_lines(config)
-    if comp:
-        out.append("✅ 신청 완료 (발표·마감 전까지 표시)")
-        out.append("\n".join(comp))
-        out.append("")
 
-    if excluded:
-        out.append("── 지원 불가로 제외 ──")
-        out.append("\n".join(excluded))
-    return "\n".join(out).strip(), total, len(excluded)
-
-
-def cmd_apt_watch(config, args):  # noqa: ARG001
-    new_notices, upcoming, first_run = find_matches(config)  # 청약홈(분양)
-    if (config.get("lh") or {}).get("enabled"):              # LH(임대) 추가
-        try:
-            from . import lh
-            n2, u2, _ = lh.find_lh_matches(config)
-            new_notices += n2
-            upcoming += u2
-        except Exception as e:  # noqa: BLE001
-            print(f"[apt] LH 조회 건너뜀: {e}")
-    try:
-        from . import db
-        db.init_db()
-        db.upsert_notices(new_notices + upcoming)
-    except Exception as e:  # noqa: BLE001
-        print(f"[apt] DB 반영 건너뜀: {e}")
-
-    if first_run:
-        print("[apt] 최초 실행 — 현재 관심지역 공고를 기준선으로 저장했습니다. "
-              "다음부터 '새 공고'만 알립니다.")
-        body, kept, _ = _apt_body(config, [], upcoming)
-        if kept:
-            notify(config, "⏰ 청약 접수 임박", body)
+def cmd_run(args):
+    cfg, prof, today = load_config(), profile.load(), today_kst()
+    state = State()
+    notices, report = collect(cfg, today)
+    if not notices:
+        msg = "⚠️ 모든 수집처에서 0건 — API 키나 접속 상태를 확인해 주세요. " + str(report)
+        discord.send(cfg["webhook"], msg, dry_run=args.dry_run)
         return
-    if not new_notices and not upcoming:
-        print("[apt] 새 공고/임박 건 없음.")
-        return
-    body, kept, excl = _apt_body(config, new_notices, upcoming)
-    if not kept:
-        print(f"[apt] 새/임박 공고는 있으나 지원가치 있는 건 없음(구조적 제외 {excl}건).")
-        return
-    title = f"🏠 청약 알림 (지원가치 {kept}건" + (f" · 제외 {excl}" if excl else "") + ")"
-    notify(config, title, body)
+    first = not state.initialized
+    for src, cnt in report.items():                     # 수집처별 연속 0건 감시
+        state.zero[src] = 0 if cnt else state.zero.get(src, 0) + 1
+        if state.zero[src] == 3:
+            discord.send(cfg["webhook"], f"⚠️ `{src}` 수집이 3회 연속 0건입니다. 사이트 구조 변경이나 "
+                         "접속 차단일 수 있어요. Actions 로그를 확인해 주세요.", dry_run=args.dry_run)
+    new, remind = plan(evaluate(notices, prof, today), prof, state, today)
+
+    if new:
+        head = (f"📋 처음 실행 — 지금 진행 중인 맞춤 공고 {len(new)}건" if first
+                else f"🆕 새 맞춤 공고 {len(new)}건")
+        discord.send(cfg["webhook"], head, [discord.embed(n, v) for n, v in new], args.dry_run)
+    if remind:
+        discord.send(cfg["webhook"], f"⏰ 리마인더 {len(remind)}건",
+                     [discord.embed(n, v, h) for n, v, h in remind], args.dry_run)
+    if not new and not remind:
+        print("[run] 보낼 알림 없음")
+    if not args.dry_run:
+        state.save(today)
 
 
-def cmd_match(config, args):  # noqa: ARG001
-    from . import applicability as ap, db
-    profile = _cheong_cfg(config)
-    regions = config.get("applyhome", {}).get("regions")
-    active = db.get_notices(regions=regions, active_only=True)
-    yes, no = [], []
-    for r in active:
-        (yes if ap.applicability(r, profile)["worth"] else no).append(r)
-    print(f"활성 공고 {len(active)}건 → 지원가치 {len(yes)}건 / 구조적 제외 {len(no)}건\n")
-    for r in yes:
-        v = ap.applicability(r, profile)
-        print(f"✅ [{r.get('type', '')}] {str(r.get('name', ''))[:36]}  ({r.get('area', '')})")
-        print(f"     {' / '.join(v['paths'])}")
-    if no:
-        print("\n── 구조적 제외(지원 경로 없음) ──")
-        for r in no:
-            print(f"⛔ {str(r.get('name', ''))[:36]} — {ap.applicability(r, profile)['reason']}")
+def cmd_preview(args):  # noqa: ARG001
+    cfg, prof, today = load_config(), profile.load(), today_kst()
+    notices, _ = collect(cfg, today)
+    rows = evaluate(notices, prof, today)
+    for lvl in ("추천", "확인", "제외"):
+        part = [(n, v) for n, v in rows if v.level == lvl]
+        print(f"\n===== {lvl} {len(part)}건 =====")
+        for n, v in part:
+            when = n.begin or n.end or n.posted
+            print(f"[{n.source}] {n.title[:50]}  ({n.region or '-'}, {when})")
+            print(f"    └ {' · '.join(v.reasons + v.tips)}")
 
 
-def cmd_sync_db(config, args):  # noqa: ARG001
-    from . import db
-    db.init_db()
-    migrated = db.migrate_seen_file(_SEEN_FILE)
-    records = _fetch_region_records(config)
-    if (config.get("lh") or {}).get("enabled"):
-        try:
-            from . import lh
-            records += lh.fetch_records(config)
-        except Exception as e:  # noqa: BLE001
-            print(f"[db] LH 조회 건너뜀: {e}")
-    n = db.upsert_notices(records)
-    print(f"[db] 공고 {n}건 저장 · seen {migrated}건 이관 → {db.DEFAULT_DB}")
-
-
-def cmd_gajeom(config, args):  # noqa: ARG001
-    from . import eligibility
-    c = _cheong_cfg(config)
-    nh = eligibility.no_house_counted_years(c)
-    r = eligibility.gajeom(c)
-    b, d = r["breakdown"], r.get("detail", {})
-    print(f"청약가점: {r['total']} / {r['max']}점   (무주택 산정기간 {nh}년)")
-    print(f"  · 무주택기간   {b['no_house']:>2}점  {d.get('no_house', '')}")
-    print(f"  · 부양가족수   {b['dependents']:>2}점  {d.get('dependents', '')}")
-    print(f"  · 통장가입기간 {b['account']:>2}점  {d.get('account', '')}")
-    if nh == 0.0:
-        print("※ 만 30세 미만 미혼이면 무주택 가점은 0으로 산정됩니다(평생 무주택이어도).")
-    print("※ 값 수정: config.yaml 의 '청약' 항목")
-
-
-def cmd_eligibility(config, args):
-    from . import eligibility
-    pno = getattr(args, "pno", None)
-    record = _find_notice(pno) if pno else None
-    if pno and not record:
-        print(f"[eligibility] DB에 공고번호 {pno} 없음 → 프로필 기준 일반 결과로 출력.\n")
-    print(eligibility.summarize(eligibility.check_eligibility(_cheong_cfg(config), record)))
-
-
-def cmd_brief(config, args):
-    from .briefing import brief_notice
-    rec = _find_notice(args.pno)
-    if not rec:
-        print(f"[brief] DB에 공고번호 {args.pno} 없음. 먼저 'sync-db' 를 실행하세요.")
-        return
-    text = brief_notice(rec, _brief_profile(config), config.get("briefing", {}) or {})
-    print(text)
-
-
-def cmd_predict(config, args):
-    from . import db
-    from .predict import estimate_chance
-    rec = _find_notice(args.pno)
-    if not rec:
-        print(f"[predict] DB에 공고번호 {args.pno} 없음. 먼저 'sync-db' 를 실행하세요.")
-        return
-    comp = db.get_competition(str(args.pno))
-    r = estimate_chance(rec, comp, _my_gajeom(config))
-    score = r.get("score")
-    print(f"당첨 가능성(휴리스틱): {r['label']}" + (f"  ·  참고점수 {score}/100" if score is not None else ""))
-    print(r.get("rationale", ""))
-    print(f"⚠️ {r.get('caveat', '')}")
-
-
-def cmd_done(config, args):  # noqa: ARG001
-    from . import db
-    rec = _find_notice(args.pno)
-    award = getattr(args, "award", None)
-    if not award and rec:
-        award = rec.get("award") or None   # 청약홈은 DB에 당첨발표일 존재
-    db.mark_applied(args.pno, award_date=award)
-    name = rec.get("name", "") if rec else "(DB에 공고정보 없음 — sync-db 후 이름 표시)"
-    print(f"✅ 신청 완료 표시: {args.pno}  {str(name)[:44]}")
-    if award:
-        print(f"   당첨발표일 {award} — 발표 전까지 메일/대시보드에 표시됩니다.")
-    else:
-        print("   발표일 미상 → 마감일까지 표시. 발표일 알면: done <공고번호> <YYYY-MM-DD>")
-
-
-def cmd_compete(config, args):
-    """청약홈 경쟁률 API로 특정 공고의 주택형별 경쟁률/미달을 조회·저장.
-
-    ⚠️ 접수 마감된 공고의 결과값이다(진행 중 공고는 아직 데이터 없음).
-    """
-    from . import db
-    from .competition import fetch_rates_by_type
-    key = config.get("applyhome", {}).get("service_key")
-    hmn = args.house_manage_no
-    rows = fetch_rates_by_type(key, house_manage_no=hmn)
-    if not rows:
-        print(f"[compete] 주택관리번호 {hmn} 의 경쟁률 데이터가 없습니다.\n"
-              "  · 접수 마감 전 공고이거나(마감 후 집계) 번호가 다를 수 있습니다.\n"
-              "  · 주택관리번호는 청약홈 공고 상세의 'HOUSE_MANAGE_NO' 값입니다.")
-        return
-    print(f"주택관리번호 {hmn} — 주택형별 경쟁률 (미달=당첨 쉬움)\n")
-    for e in rows:
-        flag = "🟢 미달" if e["undersubscribed"] else "🔴 경쟁"
-        print(f"  {flag}  {e['house_type']:<12} 공급 {e['supply']:>4}세대 · "
-              f"접수 {e['req_cnt']:>5}건 · {e['rate_text']}")
-    # DB에 저장(predict 가 참조).
-    try:
-        db.save_competition(str(hmn), {"by_type": rows})
-        under = [e["house_type"] for e in rows if e["undersubscribed"]]
-        if under:
-            print(f"\n💡 미달 주택형(신청 시 당첨 가능성 큼): {', '.join(under)}")
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def cmd_undone(config, args):  # noqa: ARG001
-    from . import db
-    db.unmark_applied(args.pno)
-    print(f"신청 완료 표시 해제: {args.pno}")
-
-
-def cmd_status(config, args):  # noqa: ARG001
-    lines = _completed_lines(config)
-    if not lines:
-        print("신청 완료로 표시된 공고가 없습니다.  (표시: python -m cheong.main done <공고번호>)")
-        return
-    print(f"✅ 신청 완료 {len(lines)}건 (발표·마감 전까지)")
-    for ln in lines:
-        print("  " + ln)
-
-
-def cmd_watch(config, args):
-    target = get_target(config, args.target)
-    interval = args.interval or config.get("poll_interval_seconds", 60)
-    print(f"[watch] '{target['name']}' 감시 시작 (간격 {interval}s). Ctrl+C 로 중단.")
-    while True:
-        try:
-            if is_open(target):
-                print("[watch] 🎯 응모 오픈 감지!")
-                notify(config, "청약/응모 오픈!", f"{target['name']} 지금 열렸습니다.\n{target['url']}")
-                if args.autofill:
-                    run_fill(config, target)
-                return
-            print(f"[watch] 아직 안 열림 … {interval}s 후 재확인")
-        except Exception as e:  # noqa: BLE001
-            print(f"[watch] 확인 중 오류: {e}")
-        time.sleep(interval)
-
-
-def cmd_fill(config, args):
-    run_fill(config, get_target(config, args.target))
-
-
-def cmd_test_notify(config, args):  # noqa: ARG001
-    notify(config, "테스트 알림", "알림 설정이 정상 동작합니다 ✅")
+def cmd_test(args):  # noqa: ARG001
+    cfg = load_config()
+    if not cfg["webhook"]:
+        raise SystemExit("DISCORD_WEBHOOK_URL 이 없습니다 (.env 또는 환경변수)")
+    discord.send(cfg["webhook"], "✅ 청약 알리미 연결 테스트 — 이 메시지가 보이면 성공입니다.")
+    print("보냈습니다. 디스코드를 확인하세요.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="청약/응모 반자동화 도구")
-    parser.add_argument("-c", "--config", default="config.yaml")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    sub.add_parser("apt-watch", help="청약홈 공고 확인 → 새 공고/임박 알림 + DB 반영")
-    sub.add_parser("sync-db", help="관심지역 공고 전체를 DB에 적재(+seen 이관)")
-    sub.add_parser("gajeom", help="청약가점 계산(config '청약' 값 사용)")
-    sub.add_parser("match", help="활성 공고별 '지원 가치' 필터(구조적 불가 제외)")
-    pe = sub.add_parser("eligibility", help="청약 자격 사전체크(선택: 공고번호)")
-    pe.add_argument("pno", nargs="?")
-    pb = sub.add_parser("brief", help="LLM 공고 브리핑(공고번호)")
-    pb.add_argument("pno")
-    pp = sub.add_parser("predict", help="당첨 가능성 휴리스틱 추정(공고번호)")
-    pp.add_argument("pno")
-    pc = sub.add_parser("compete", help="주택형별 경쟁률 조회(주택관리번호; 마감된 공고)")
-    pc.add_argument("house_manage_no")
-    pd = sub.add_parser("done", help="신청 완료 표시(공고번호 [발표일YYYY-MM-DD])")
-    pd.add_argument("pno")
-    pd.add_argument("award", nargs="?", help="당첨발표일 YYYY-MM-DD (선택; LH는 공고문에서 확인)")
-    pu = sub.add_parser("undone", help="신청 완료 표시 해제(공고번호)")
-    pu.add_argument("pno")
-    sub.add_parser("status", help="신청 완료 목록 + 발표/마감 D-day")
-    sub.add_parser("test-notify", help="알림 설정 테스트")
-
-    pw = sub.add_parser("watch", help="응모 오픈 감시 → 알림 (+선택적 자동입력)")
-    pw.add_argument("target")
-    pw.add_argument("--interval", type=int)
-    pw.add_argument("--autofill", action="store_true", help="열리면 폼 자동입력까지 실행")
-    pf = sub.add_parser("fill", help="지금 바로 폼 자동입력")
-    pf.add_argument("target")
-
-    args = parser.parse_args()
-    config = load_config(args.config)
-
-    handlers = {
-        "apt-watch": cmd_apt_watch,
-        "sync-db": cmd_sync_db,
-        "gajeom": cmd_gajeom,
-        "match": cmd_match,
-        "eligibility": cmd_eligibility,
-        "brief": cmd_brief,
-        "predict": cmd_predict,
-        "compete": cmd_compete,
-        "done": cmd_done,
-        "undone": cmd_undone,
-        "status": cmd_status,
-        "test-notify": cmd_test_notify,
-        "watch": cmd_watch,
-        "fill": cmd_fill,
-    }
-    handlers[args.cmd](config, args)
+    ap = argparse.ArgumentParser(prog="cheong", description="내 조건 맞춤 청약 알리미")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("setup", help="설문으로 프로필 만들기")
+    s.add_argument("--print", action="store_true", help="Secret용 한 줄 JSON 출력")
+    r = sub.add_parser("run", help="수집·판정·알림")
+    r.add_argument("--dry-run", action="store_true")
+    sub.add_parser("preview", help="진행 중 공고와 판정 이유 보기")
+    sub.add_parser("test-discord", help="웹훅 테스트")
+    args = ap.parse_args()
+    if args.cmd == "setup":
+        if args.print:
+            import json
+            print(json.dumps(profile.load(), ensure_ascii=False, separators=(",", ":")))
+        else:
+            profile.run_survey()
+    elif args.cmd == "run":
+        cmd_run(args)
+    elif args.cmd == "preview":
+        cmd_preview(args)
+    else:
+        cmd_test(args)
 
 
 if __name__ == "__main__":

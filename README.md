@@ -1,124 +1,111 @@
-# 청약 알리미 (cheongyak-auto)
+# 청약 알리미 v2 (cheongyak-auto)
 
-청약홈(한국부동산원) 공식 오픈API로 **관심 지역의 아파트 청약 공고**를 감지해
-**새 공고 · 청약접수 임박**을 이메일과 macOS 알림으로 보내주는 도구.
+설문으로 받은 **내 조건**(나이·혼인·무주택·세대·소득·통장·지역)에 맞는 청약 공고만 골라
+**디스코드**로 알려준다. GitHub Actions 에서 하루 2번(08:47 / 17:47 KST) 돌아가므로 맥이 꺼져 있어도 된다.
 
-> ⚠️ 이 도구는 **알림까지만** 자동화한다. 실제 청약 신청(공동인증서 로그인·자격 판정·제출)은
-> 자동화 대상이 아니며 사용자가 직접 한다. 잘못된 신청은 부적격 당첨 등 실제 불이익이 있으므로,
-> "좋은 공고를 놓치지 않게 잡아주는 것"까지가 안전한 자동화의 경계다.
+> 알림까지만 자동화한다. 실제 신청(인증서 로그인·자격 확인·제출)은 직접 한다.
+> 판정은 공고 제목·유형 기반이라 **최종 자격은 반드시 공고문으로 확인**할 것.
 
-## 주요 기능
-- 📡 청약홈 공식 오픈API(공공데이터포털)로 APT 분양 공고 조회
-- 🏢 LH 임대주택 공고 연동(국민임대·행복주택·청년임대 등 — 청약홈이 못 잡는 물량)
-- 🔎 관심 지역 · 주택유형 필터
-- 🆕 이전에 없던 **새 공고** 감지 (기준선 저장 방식)
-- ⏰ **청약접수 시작 임박**(기본 D-3) 리마인더
-- 📧 이메일(SMTP) + macOS 데스크톱 알림
-- ⏱️ launchd로 매일 자동 실행
+## 무엇을 보나
 
-## 동작 원리
-```
-청약홈 오픈API  →  지역/유형 필터  →  새 공고·임박 판별  →  이메일/데스크톱 알림
-  (odcloud)        (config.yaml)      (.seen 기준선)         (SMTP / osascript)
-```
-최초 실행은 현재 공고를 기준선으로 조용히 저장하고, 이후부터 '새 공고'만 알린다.
+| 수집처 | 내용 | 방식 |
+|---|---|---|
+| 청약홈 | 민영·공공 APT, 무순위(줍줍), 오피스텔·민간임대, 공공지원 민간임대 | 공식 오픈API |
+| LH | 임대주택, 주거복지(매입임대·전세임대·든든전세) | 공식 오픈API (목록+상세) |
+| SH | 공공임대·공공분양 | 서울주거포털 목록 |
+| 청년안심주택 | 공공·민간 청년안심주택 | 서울시 모집공고 게시판 |
 
-## 설치
+## 판정 (추천 / 확인 / 제외)
+
+- **제외**: 구조적으로 불가한 것만 — 관심지역 밖, 신혼 전용인데 미혼, 고령자·장애인·수급자·대학생·예술인 전용, 유주택 등
+- **추천**: 대상 계층에 확실히 해당 — 청년 대상(만 19~39), 든든전세, 행복주택 청년, 공공분양 청년특공 구조 등
+- **확인**: 소득·자산·순위 기준을 공고문에서 봐야 하는 것 (기본 설정은 추천+확인 모두 알림)
+- 당첨자 발표·서류심사·계약 안내 같은 **후속 안내는 무시**
+
+### 청약통장 표시
+모든 알림 맨 위에 이 공고가 청약통장을 쓰는지 표시한다.
+
+| 표시 | 뜻 | 예 |
+|---|---|---|
+| 🟢 필요 없음 | 통장 없이 지원 | 매입·전세임대, 든든전세, 청년안심, 민간임대, 오피스텔, 무순위, 희망하우징 |
+| 🔵 가입만 | 가입 사실만 확인, 당첨돼도 통장 유지 | 행복주택, 국민임대 |
+| 🔴 사용 | 당첨되면 통장 효력 소멸 | 공공분양, 민영 APT, 신혼희망타운, 분양전환 공공임대 |
+| ⚪ 확인 | 분류 불가 → 공고문 확인 | 장기전세, 재개발임대 등 |
+
+일반 규정 기준이라 공고마다 예외가 있을 수 있다. 아예 빼고 싶으면 프로필의 `account_mode` 를
+`가입만까지`(🔴 제외) 또는 `불필요만`(🔴·🔵 제외)로 바꾼다. 기본값 `상관없음` 은 표시만 한다.
+
+## 알림 종류
+
+- 📋 첫 실행: 지금 진행 중인 맞춤 공고 요약
+- 🆕 새 맞춤 공고
+- ⏰ 리마인더: 접수 시작 / 마감 N일 전 (같은 공고에 한 번씩, 짧은 접수는 한 번만)
+- ⚠️ 어떤 수집처가 3회 연속 0건이면 경고, ❌ 실행 실패 시 링크
+
+## 설정 (처음 한 번, 15분)
+
+### 1) 디스코드 웹훅
+디스코드에서 개인 서버를 만들고 → 알림 받을 채널 ⚙️ → **연동** → **웹후크** → 새 웹후크 → **웹후크 URL 복사**.
+폰 디스코드 앱에서 그 채널 알림을 "모든 메시지"로 해 두면 푸시가 온다.
+
+### 2) 공공데이터포털 API 키 (무료, 보통 즉시 승인)
+[data.go.kr](https://www.data.go.kr) 로그인 → 아래 3개 각각 **활용신청** → 마이페이지 → **일반 인증키(Decoding)** 복사
+- 한국부동산원_청약홈 분양정보 조회 서비스 (15098547)
+- 한국토지주택공사_분양임대공고문 조회 서비스 (15058530)
+- 한국토지주택공사_분양임대공고별 상세정보 조회 서비스 (15057999)
+
+키는 하나로 같다. LH 는 `LH_KEY` 를 비우면 `APPLYHOME_KEY` 를 그대로 쓴다.
+
+### 3) 설문 → 프로필
 ```bash
-git clone <this-repo> cheongyak-auto
-cd cheongyak-auto
-python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium         # 폼자동입력(선택 기능)에만 필요
-cp config.example.yaml config.yaml  # 이후 config.yaml 값 채우기
+python -m cheong setup        # 대화형 설문 → profile.json + Secret용 한 줄 JSON 출력
 ```
 
-### API 키 발급 (무료)
-1. [공공데이터포털](https://www.data.go.kr) 로그인
-2. [한국부동산원_청약홈 분양정보 조회 서비스](https://www.data.go.kr/data/15098547/openapi.do) → **활용신청**(보통 즉시 자동승인)
-3. 마이페이지 → 오픈API → **일반 인증키(Decoding)** 복사 → `config.yaml` 의 `service_key` 에 입력
+### 4) GitHub Secrets 등록
+저장소 → Settings → Secrets and variables → Actions → New repository secret
 
-### 이메일 알림 설정
-`config.yaml` 의 `notify.email` 에 SMTP 정보 입력.
-Gmail은 로그인 비밀번호가 아니라 **앱 비밀번호(16자리)**가 필요하다
-(구글 계정 → 보안 → 2단계 인증 → 앱 비밀번호).
+| 이름 | 값 |
+|---|---|
+| `DISCORD_WEBHOOK_URL` | 1)의 웹훅 URL |
+| `PROFILE_JSON` | 3)에서 출력된 한 줄 JSON |
+| `APPLYHOME_KEY` | 2)의 인증키(Decoding) |
+| `LH_KEY` | (선택) 다른 키를 쓸 때만 |
 
-## 사용법
+### 5) 첫 실행
+Actions → **청약 알리미** → Run workflow → `dry_run` 체크 → 로그 확인 → 이상 없으면 체크 해제하고 다시 실행.
+이후는 매일 자동. 알림 이력은 `state/state.json` 으로 커밋된다(공고 id·날짜만, 개인정보 없음).
+
+## 로컬에서 쓰기
+`.env` 파일에 위 값들을 `KEY=값` 으로 넣고:
 ```bash
-python3 -m cheong.main test-notify        # 알림 설정 점검
-python3 -m cheong.main apt-watch          # 청약홈 확인 → 새 공고/임박 알림 + DB 반영
-python3 -m cheong.main sync-db            # 관심지역 공고 전체를 DB에 적재(+seen 이관)
-python3 -m cheong.main gajeom             # 청약가점 계산(만30세 규칙 반영)
-python3 -m cheong.main match              # 활성 공고별 '지원 가치' 필터(구조적 불가 제외)
-python3 -m cheong.main eligibility [공고번호]  # 자격 사전체크(특별공급 유형별, 참고용)
-python3 -m cheong.main brief <공고번호>    # LLM 공고 브리핑(키 없으면 템플릿 요약)
-python3 -m cheong.main predict <공고번호>  # 당첨 가능성 휴리스틱 추정
-python3 -m cheong.main compete <주택관리번호> # 주택형별 경쟁률/미달 조회(마감된 공고)
-python3 -m cheong.main done <공고번호>     # 신청 완료 표시(알림에서 빼고 발표/마감까지 완료 표시)
-python3 -m cheong.main status             # 신청 완료 목록 + 발표/마감 D-day
-streamlit run dashboard/app.py            # 웹 대시보드 UI(공고 보기·신청완료 버튼·자격 체크)
-```
-- `brief` 는 `config.yaml` 의 `briefing.api_key`(또는 `ANTHROPIC_API_KEY` 환경변수)가 있으면 Claude로 요약하고, 없으면 템플릿으로 폴백한다.
-- `predict` 는 **규칙 기반 휴리스틱**이며 당첨을 보장하지 않는다(경쟁률 API 연동 시 정확도 향상).
-
-## 매일 자동 실행 (macOS launchd)
-```bash
-cp com.example.cheongyak-auto.plist ~/Library/LaunchAgents/com.<본인id>.cheongyak-auto.plist
-# plist 안의 python 경로 / 프로젝트 경로를 본인 환경에 맞게 수정한 뒤:
-launchctl load -w ~/Library/LaunchAgents/com.<본인id>.cheongyak-auto.plist
-launchctl start com.<본인id>.cheongyak-auto        # 즉시 1회 테스트
-# 끄기:
-launchctl unload ~/Library/LaunchAgents/com.<본인id>.cheongyak-auto.plist
-```
-※ 최초 실행 시 macOS가 Desktop 접근 허용을 물으면 '허용'. permission 에러가 나면
-   프로젝트를 Desktop 밖(예: `~/cheongyak-auto`)으로 옮기면 해결된다.
-
-## config.yaml 구조
-```yaml
-applyhome:
-  service_key: "..."          # data.go.kr 일반 인증키(Decoding)
-  regions: ["서울", "경기"]    # 공급지역명 부분일치
-  house_types: []             # 비우면 전체 (예: ["민영","국민"])
-  remind_days_before: 3       # 접수 시작 N일 전부터 임박 알림
-notify:
-  desktop: true
-  email: { smtp_host, smtp_port, username, password, from_addr, to_addr }
+python -m cheong test-discord   # 웹훅 테스트
+python -m cheong preview        # 진행 중 공고 + 판정 이유(제외 포함) 보기
+python -m cheong run --dry-run  # 보내지 않고 출력만
+python -m cheong run            # 실제 알림
+python -m unittest discover -s tests -t .   # 테스트(네트워크 불필요)
 ```
 
-## 자동 실행 (클라우드 · 맥 없이)
-`.github/workflows/daily.yml` 이 매일 09:00(KST) GitHub Actions 러너에서 `apt-watch` 를 실행한다.
-저장소 → Settings → Secrets and variables → Actions 에 아래를 등록:
-`APPLYHOME_SERVICE_KEY`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `NOTIFY_TO`, `ANTHROPIC_API_KEY`.
-
-## 아키텍처
+## 구조
 ```
-청약홈 오픈API ──▶ cheong/db.py(SQLite) ──▶ dashboard(Streamlit)
-     │                    ▲  ▲
-     │  apt-watch         │  └── cheong/gajeom.py(청약가점 84점)
-     └── 이메일/알림 ─────┘      cheong/briefing.py(Claude 브리핑)
-                                cheong/predict.py(당첨 휴리스틱)
-                                cheong/competition.py(경쟁률 API)
+cheong/
+  sources/applyhome.py  청약홈 4개 엔드포인트
+  sources/lh.py         LH 목록 + 상세(접수일·발표일·주소)
+  sources/sh.py         서울주거포털 SH 임대·분양 표
+  sources/youth.py      청년안심주택 게시판
+  profile.py            설문 / 프로필 로드(PROFILE_JSON → profile.json)
+  eligibility.py        추천·확인·제외 판정 규칙
+  discord.py            웹훅 임베드
+  state.py              알림 이력
+  main.py               CLI (setup / run / preview / test-discord)
+config.yaml             수집처 on/off (비밀값 없음)
+.github/workflows/alert.yml
 ```
 
-## 로드맵
-- [x] 경쟁률 API 클라이언트 (`cheong/competition.py`, 15098905 · 라이브 검증 · `compete` 명령)
-- [x] LH 상세 API 연동 (`cheong/lh.py` fetch_detail, 15057999) — 접수시작·**당첨발표일**·주소·공고문파일·접수처 자동 채움
-- [x] 청약가점 계산기 (`cheong/gajeom.py`, 84점 만점)
-- [x] SQLite 적재 (`cheong/db.py`, `detail_json` 보강필드 보존)
-- [x] GitHub Actions 스케줄러 (`.github/workflows/daily.yml`)
-- [x] Streamlit 대시보드 (`dashboard/app.py`)
-- [x] LLM 공고 브리핑 (`cheong/briefing.py`) · 당첨 확률 휴리스틱 (`cheong/predict.py`)
-- [ ] 경쟁률 실데이터 학습 커트라인 모델(현재는 규칙 기반 휴리스틱)
-- [ ] Docker 배포 (`Dockerfile` 포함, 이미지 퍼블리시 예정)
-
-## 부가 기능: 응모 폼 자동입력 (실험적)
-`cheong/monitor.py`·`cheong/autofill.py` 는 아파트 청약이 아닌 일반 응모 이벤트용으로,
-오픈 감지 후 폼을 자동 입력하다 캡차/본인인증이 감지되면 사람에게 넘긴다.
-`python3 -m cheong.main watch <타겟> --autofill` 참고.
-
-## 면책
-- 대상 서비스의 이용약관을 준수할 책임은 사용자에게 있다.
-- 본 도구는 정보 알림 목적이며, 청약 신청·당첨·자격에 대한 어떤 것도 보장하지 않는다.
+## 한계
+- SH 목록엔 접수기간이 없어 게시일·발표일만 쓴다(접수일 리마인더 없음). 게시 21일 뒤엔 종료로 본다.
+- 소득·자산 세부 기준은 공고문 PDF 안에 있어 자동 판정하지 않는다.
+- SH·청년안심은 HTML 파싱이라 사이트 개편 시 깨질 수 있다 → 0건 경고로 알 수 있다.
 
 ## License
 MIT
