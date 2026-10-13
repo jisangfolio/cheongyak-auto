@@ -2,6 +2,7 @@
 
 fixtures/sh_lease.html : 2026-10-13 서울주거포털 SH 공공임대 목록 실제 HTML 일부
 fixtures/youth.html    : 같은 날 청년안심주택 목록 일부 (리마인더 검증용으로 첫 행 청약신청일만 10-14로 바꿈)
+fixtures/sh_board.html  : 2026-10-13 SH 홈페이지 공고 게시판(주택임대) 실제 HTML 일부
 fixtures/youth.json    : 같은 목록의 bbsListJson.json 응답 형태 (페이지 JS가 쓰는 필드명 기준)
 청약홈·LH 응답은 API 필드명에 맞춰 만든 예시값이다.
 """
@@ -67,6 +68,13 @@ class ParserTest(unittest.TestCase):
         self.assertEqual((n.uid, n.category, n.status, n.posted), ("311349", "수요자맞춤형", "모집중", date(2026, 10, 12)))
         self.assertIn("view.do?seq=311349", n.url)
         self.assertEqual(ns[3].announce, date(2027, 1, 27))
+
+    def test_sh_board(self):
+        ns = sh.parse_board((FX / "sh_board.html").read_text(encoding="utf-8"), "2")
+        self.assertEqual([n.uid for n in ns], ["311428", "311375", "311349"])   # 발표·계약 안내는 제외
+        self.assertEqual(ns[0].title, "[토지임대부 사회주택] 옥류서원 입주자 모집 공고문")
+        self.assertEqual((ns[0].posted, ns[0].region), (date(2026, 10, 13), "서울"))
+        self.assertTrue(ns[0].url.endswith("m_241/view.do?seq=311428"))
 
     def test_youth(self):
         ns = youth.parse_list((FX / "youth.html").read_text(encoding="utf-8"))
