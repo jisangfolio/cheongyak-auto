@@ -34,7 +34,7 @@ def _first(it, *keys):
 def to_notice(it, kind_label):
     addr = _first(it, "HSSPLY_ADRES")
     region = _first(it, "SUBSCRPT_AREA_CODE_NM") or to_sido(addr)
-    dtl = _first(it, "HOUSE_DTL_SECD_NM", "SEARCH_HOUSE_SECD_NM")
+    dtl = _first(it, "HOUSE_DTL_SECD_NM", "HOUSE_DETAIL_SECD_NM")   # 공공지원민간임대는 DETAIL
     secd = _first(it, "HOUSE_SECD_NM")
     category = " ".join(x for x in (kind_label if kind_label != "APT" else "APT", dtl or secd) if x)
     uid = _first(it, "PBLANC_NO", "HOUSE_MANAGE_NO")
@@ -46,8 +46,10 @@ def to_notice(it, kind_label):
         region=to_sido(region) or region,
         address=addr,
         posted=parse_date(_first(it, "RCRIT_PBLANC_DE")),
-        begin=parse_date(_first(it, "RCEPT_BGNDE", "SUBSCRPT_RCEPT_BGNDE", "GNRL_RNK1_CRSPAREA_RCPTDE")),
-        end=parse_date(_first(it, "RCEPT_ENDDE", "SUBSCRPT_RCEPT_ENDDE", "GNRL_RNK2_ETC_AREA_ENDDE")),
+        begin=parse_date(_first(it, "RCEPT_BGNDE", "SUBSCRPT_RCEPT_BGNDE", "GNRL_RCEPT_BGNDE",
+                                 "GNRL_RNK1_CRSPAREA_RCPTDE")),
+        end=parse_date(_first(it, "RCEPT_ENDDE", "SUBSCRPT_RCEPT_ENDDE", "GNRL_RCEPT_ENDDE",
+                               "GNRL_RNK2_ETC_AREA_ENDDE")),
         announce=parse_date(_first(it, "PRZWNER_PRESNATN_DE")),
         households=_first(it, "TOT_SUPLY_HSHLDCO", "SUPLY_HSHLDCO"),
         url=_first(it, "PBLANC_URL", "HMPG_ADRES"),

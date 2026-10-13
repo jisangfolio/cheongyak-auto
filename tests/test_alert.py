@@ -2,6 +2,7 @@
 
 fixtures/sh_lease.html : 2026-10-13 서울주거포털 SH 공공임대 목록 실제 HTML 일부
 fixtures/youth.html    : 같은 날 청년안심주택 목록 일부 (리마인더 검증용으로 첫 행 청약신청일만 10-14로 바꿈)
+fixtures/youth.json    : 같은 목록의 bbsListJson.json 응답 형태 (페이지 JS가 쓰는 필드명 기준)
 청약홈·LH 응답은 API 필드명에 맞춰 만든 예시값이다.
 """
 import json
@@ -72,6 +73,30 @@ class ParserTest(unittest.TestCase):
         self.assertEqual([n.uid for n in ns], ["6695", "6692"])
         self.assertIn("민간", ns[0].category)
         self.assertTrue(ns[0].url.startswith("https://soco.seoul.go.kr/youth/bbs/BMSR00015/view.do?"))
+
+    def test_youth_json(self):
+        body = json.loads((FX / "youth.json").read_text(encoding="utf-8"))
+        ns = youth.parse_json(body)
+        self.assertEqual([n.uid for n in ns], ["6695", "6692"])
+        n = ns[0]
+        self.assertEqual((n.category, n.posted, n.begin), ("청년안심주택 민간 추가", date(2026, 10, 8), date(2026, 10, 14)))
+        self.assertEqual(n.url, "https://soco.seoul.go.kr/youth/bbs/BMSR00015/view.do?optn1=2026-10-08&boardId=6695&menuNo=400008")
+
+    def test_applyhome_kinds_real_fields(self):
+        # 2026-10-13 실제 응답에서 확인한 필드 (공공지원민간임대는 YYYYMMDD · HOUSE_DETAIL_SECD_NM)
+        p = applyhome.to_notice({"HOUSE_MANAGE_NO": "2026850051", "PBLANC_NO": "2026850051",
+                                 "HOUSE_NM": "x", "HOUSE_SECD_NM": "공공지원민간임대",
+                                 "HOUSE_DETAIL_SECD_NM": "공공지원민간임대", "SUBSCRPT_AREA_CODE_NM": "부산",
+                                 "RCRIT_PBLANC_DE": "20261012", "SUBSCRPT_RCEPT_BGNDE": "20261019",
+                                 "SUBSCRPT_RCEPT_ENDDE": "20261020", "PRZWNER_PRESNATN_DE": "20261023"},
+                                "공공지원민간임대")
+        self.assertEqual((p.region, p.posted, p.begin, p.end, p.announce),
+                         ("부산", date(2026, 10, 12), date(2026, 10, 19), date(2026, 10, 20), date(2026, 10, 23)))
+        u = applyhome.to_notice({"PBLANC_NO": "2026950077", "HOUSE_NM": "y", "HOUSE_DTL_SECD_NM": "오피스텔",
+                                 "SUBSCRPT_AREA_CODE_NM": "경기", "SUBSCRPT_RCEPT_BGNDE": "2026-10-19",
+                                 "SUBSCRPT_RCEPT_ENDDE": "2026-10-20"}, "오피스텔/도시형/민간임대")
+        self.assertIn("오피스텔", u.category)
+        self.assertEqual((u.begin, u.end), (date(2026, 10, 19), date(2026, 10, 20)))
 
     def test_applyhome_and_lh(self):
         a = applyhome.to_notice(REMNDR, "무순위/잔여")

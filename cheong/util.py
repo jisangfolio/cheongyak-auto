@@ -31,12 +31,13 @@ def parse_date(s):
         return None
 
 
-def get(url, params=None, timeout=30, retries=3, backoff=3, label="http"):
-    """GET with 재시도. 공공데이터포털은 일시적 5xx·타임아웃이 잦다."""
+def _request(method, url, params=None, data=None, timeout=30, retries=3, backoff=3, label="http"):
+    """재시도 HTTP. 공공데이터포털은 일시적 5xx·타임아웃이 잦다."""
     last = None
     for attempt in range(1, retries + 1):
         try:
-            r = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": UA})
+            r = requests.request(method, url, params=params, data=data, timeout=timeout,
+                                 headers={"User-Agent": UA})
             r.raise_for_status()
             return r
         except requests.exceptions.RequestException as e:
@@ -45,6 +46,14 @@ def get(url, params=None, timeout=30, retries=3, backoff=3, label="http"):
                 print(f"[{label}] 재시도 {attempt}/{retries}: {e}")
                 time.sleep(backoff * attempt)
     raise last
+
+
+def get(url, params=None, timeout=30, retries=3, backoff=3, label="http"):
+    return _request("GET", url, params=params, timeout=timeout, retries=retries, backoff=backoff, label=label)
+
+
+def post(url, data=None, timeout=30, retries=3, backoff=3, label="http"):
+    return _request("POST", url, data=data, timeout=timeout, retries=retries, backoff=backoff, label=label)
 
 
 SIDO = {
