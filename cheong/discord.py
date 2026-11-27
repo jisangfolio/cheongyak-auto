@@ -173,6 +173,7 @@ def sync_completions(state, bot_token, user_id, notice_keys):
     """현재 진행 중인 공고에서 지정 계정의 ✅를 찾아 완료 상태를 저장한다."""
     emoji = quote("✅", safe="")
     completed = 0
+    checked = 0
     blocked_channels = set()
     for message_id, info in state.tracked_messages.items():
         key = info["key"]
@@ -192,9 +193,13 @@ def sync_completions(state, bot_token, user_id, notice_keys):
         if reacted is None:
             print(f"[discord] 완료 반응을 읽을 채널 권한을 확인해 주세요 ({channel_id}).")
             blocked_channels.add(channel_id)
-        elif reacted:
-            state.mark_done(key)
-            completed += 1
+        else:
+            checked += 1
+            if reacted:
+                state.mark_done(key)
+                completed += 1
+    if checked:
+        print(f"[discord] 완료 반응 확인 {checked}개 메시지")
     if completed:
         print(f"[discord] 완료 처리 {completed}건")
     return completed
