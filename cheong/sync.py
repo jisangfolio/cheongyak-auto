@@ -24,7 +24,7 @@ def git(*args, check=True):
 
 
 def union(a, b):
-    """두 state 를 합친다: 처음 본 날짜는 더 이른 것, 리마인더는 둘 다, 0건 카운터는 큰 쪽."""
+    """두 state를 합친다. 한쪽에서 완료한 공고는 완료 상태를 유지한다."""
     seen = dict(b.get("seen", {}))
     for k, d in a.get("seen", {}).items():
         seen[k] = min(d, seen.get(k, d))
@@ -35,8 +35,17 @@ def union(a, b):
     zero = dict(b.get("zero", {}))
     for k, v in a.get("zero", {}).items():
         zero[k] = max(v, zero.get(k, 0))
-    return {"initialized": bool(a.get("initialized") or b.get("initialized")), "zero": zero,
-            "seen": dict(sorted(seen.items())), "reminded": reminded}
+    merged = {"initialized": bool(a.get("initialized") or b.get("initialized")), "zero": zero,
+              "seen": dict(sorted(seen.items())), "reminded": reminded}
+    done = set(a.get("done", [])) | set(b.get("done", []))
+    if done:
+        merged["done"] = sorted(done)
+    messages = {**b.get("tracked_messages", {}), **a.get("tracked_messages", {})}
+    tracked = {mid: info for mid, info in sorted(messages.items())
+               if info["key"] in seen and info["key"] not in done}
+    if tracked:
+        merged["tracked_messages"] = tracked
+    return merged
 
 
 def _stage(n):

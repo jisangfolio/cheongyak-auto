@@ -37,14 +37,17 @@ def load_config():
     env = lambda k: os.environ.get(k, "").strip()   # Secret 붙여넣기 때 딸려 온 줄바꿈 제거
     cfg["keys"] = {"applyhome": env("APPLYHOME_KEY"), "lh": env("LH_KEY")}
     cfg["webhook"] = env("DISCORD_WEBHOOK_URL")
+    cfg["bot_token"] = env("DISCORD_BOT_TOKEN")
+    cfg["user_id"] = env("DISCORD_USER_ID")
+    cfg["lh_public_only"] = env("CHEONG_LH_PUBLIC_ONLY") == "1"
     return cfg
 
 
 def _source_filter():
     """CHEONG_ONLY=lh (이것만) / CHEONG_SKIP=lh (이것 빼고). 쉼표로 여러 개.
 
-    GitHub Actions(해외 IP)에서는 LH(apis.data.go.kr)가 막혀 있어 Actions 는 lh 를 빼고,
-    Mac 은 lh 만 돌린다. 둘이 state/state.json 을 같이 쓴다(cheong.sync).
+    GitHub Actions는 LH 서울주거포털 목록을, Mac은 LH API를 본다.
+    둘이 state/state.json을 같이 쓴다(cheong.sync).
     """
     split = lambda k: {x.strip() for x in os.environ.get(k, "").split(",") if x.strip()}
     return split("CHEONG_ONLY"), split("CHEONG_SKIP")
@@ -62,10 +65,13 @@ def collect(cfg, today):
             got = mod.fetch(cfg, today)
         except Exception as e:  # noqa: BLE001 - 한 수집처 실패가 전체를 막지 않게
             print(f"[{name}] 실패: {e}")
-            got = []
+            report[name] = None
+            continue
         report[name] = len(got)
         notices.extend(got)
-    print("[수집] " + ", ".join(f"{k} {v}건" for k, v in report.items()))
+    summary = [f"{name} {str(count) + '건' if count is not None else '실패'}"
+               for name, count in report.items()]
+    print("[수집] " + ", ".join(summary))
     return notices, report
 
 
@@ -79,61 +85,85 @@ def evaluate(notices, prof, today):
     return out
 
 
+def _schedule_key(n, v, today):
+    if n.end and n.end <= today + timedelta(days=1):
+        return (0, n.end, -v.score)
+    if n.begin and n.begin > today:
+        return (2, n.begin, -v.score)
+    if n.end:
+        return (1, n.end, -v.score)
+    return (3, today, -v.score)
+
+
 def plan(evaluated, prof, state, today):
     """보낼 것 정하기: (새 공고, 리마인더). 상태도 갱신한다."""
     min_score = LEVELS.get(prof.get("min_level", "확인"), 1)
     days = int(prof.get("remind_days", 2))
     new, remind = [], []
+    end_today = f"end_today:{today.isoformat()}"
     for n, v in evaluated:
-        if v.level == "무시":
+        if state.is_done(n.key) or v.level == "무시":
             continue
         ok = v.score >= min_score
         if state.is_new(n.key):
             state.mark_seen(n.key, today)
             if ok:
                 new.append((n, v))
+                if n.end == today:
+                    state.mark_reminded(n.key, end_today)
             continue
         if not ok:
+            continue
+        if n.end == today:
+            if not state.was_reminded(n.key, end_today):
+                state.mark_reminded(n.key, end_today)
+                remind.append((n, v, "end"))
             continue
         if n.begin and today <= n.begin <= today + timedelta(days=days) \
                 and not state.was_reminded(n.key, "begin"):
             state.mark_reminded(n.key, "begin")
-            dd = (n.begin - today).days
-            remind.append((n, v, "오늘 접수 시작!" if dd == 0 else f"접수 시작 D-{dd}"))
-        elif n.end and today <= n.end <= today + timedelta(days=days) \
+            remind.append((n, v, "begin"))
+        elif n.end and today < n.end <= today + timedelta(days=days) \
                 and not state.was_reminded(n.key, "end") \
                 and not (state.was_reminded(n.key, "begin") and n.begin
-                         and (n.end - n.begin).days <= days):   # 짧은 접수는 한 번만
+                         and (n.end - n.begin).days <= days):   # 짧은 접수의 사전 마감 알림 생략
             state.mark_reminded(n.key, "end")
-            dd = (n.end - today).days
-            remind.append((n, v, "오늘 마감!" if dd == 0 else f"마감 D-{dd}"))
-    new.sort(key=lambda x: (-x[1].score, x[0].begin or x[0].end or today))
+            remind.append((n, v, "end"))
+    new.sort(key=lambda row: _schedule_key(*row, today))
+    remind.sort(key=lambda row: _schedule_key(row[0], row[1], today))
     return new, remind
 
 
 def cmd_run(args):
     cfg, prof, today = load_config(), profile.load(), today_kst()
+    cfg["regions"] = prof.get("regions", [])
     state = State()
     notices, report = collect(cfg, today)
     if not notices:
         msg = "⚠️ 수집 0건 — API 키나 접속 상태를 확인해 주세요. " + str(report)
         discord.send(cfg["webhook"], msg, dry_run=args.dry_run)
         return
+    evaluated = evaluate(notices, prof, today)
     first = not state.initialized
+    if not args.dry_run and cfg.get("bot_token") and cfg.get("user_id"):
+        if discord.sync_completions(state, cfg["bot_token"], cfg["user_id"], {n.key for n, _ in evaluated}):
+            state.save(today)
     for src, cnt in report.items():                     # 수집처별 연속 0건 감시
-        state.zero[src] = 0 if cnt else state.zero.get(src, 0) + 1
+        healthy = cnt is not None and (cnt > 0 or cfg["sources"].get(src, {}).get("allow_empty"))
+        state.zero[src] = 0 if healthy else state.zero.get(src, 0) + 1
         if state.zero[src] == 3:
             discord.send(cfg["webhook"], f"⚠️ `{src}` 수집이 3회 연속 0건입니다. 사이트 구조 변경이나 "
                          "접속 차단일 수 있어요. Actions 로그를 확인해 주세요.", dry_run=args.dry_run)
-    new, remind = plan(evaluate(notices, prof, today), prof, state, today)
+    new, remind = plan(evaluated, prof, state, today)
 
     if new:
         head = (f"📋 처음 실행 — 지금 진행 중인 맞춤 공고 {len(new)}건" if first
                 else f"🆕 새 맞춤 공고 {len(new)}건")
-        discord.send(cfg["webhook"], head, [discord.embed(n, v) for n, v in new], args.dry_run)
+        cards = [(n.key, discord.embed(n, v, today)) for n, v in new]
+        discord.send_notices(cfg, state, head, cards, args.dry_run)
     if remind:
-        discord.send(cfg["webhook"], f"⏰ 리마인더 {len(remind)}건",
-                     [discord.embed(n, v, h) for n, v, h in remind], args.dry_run)
+        cards = [(n.key, discord.embed(n, v, today, reminder=kind)) for n, v, kind in remind]
+        discord.send_notices(cfg, state, f"⏰ 리마인더 {len(remind)}건", cards, args.dry_run)
     if not new and not remind:
         print("[run] 보낼 알림 없음")
     if not args.dry_run:
@@ -142,6 +172,7 @@ def cmd_run(args):
 
 def cmd_preview(args):  # noqa: ARG001
     cfg, prof, today = load_config(), profile.load(), today_kst()
+    cfg["regions"] = prof.get("regions", [])
     notices, _ = collect(cfg, today)
     rows = evaluate(notices, prof, today)
     for lvl in ("추천", "확인", "제외"):
@@ -151,6 +182,40 @@ def cmd_preview(args):  # noqa: ARG001
             when = n.begin or n.end or n.posted
             print(f"[{n.source}] {n.title[:50]}  ({n.region or '-'}, {when})")
             print(f"    └ {' · '.join(v.reasons + v.tips)}")
+
+
+def cmd_replay(args):
+    """현재 공고를 신규 여부와 무관하게 다시 보고, 기존 알림 이력은 보존한다."""
+    cfg, prof, today = load_config(), profile.load(), today_kst()
+    cfg["regions"] = prof.get("regions", [])
+    state = State()
+    if args.send and (any(_source_filter()) or not cfg["webhook"]):
+        raise SystemExit("재발송에는 전체 수집처와 DISCORD_WEBHOOK_URL 설정이 필요합니다.")
+    notices, report = collect(cfg, today)
+    failed = [name for name, count in report.items() if count is None
+              or (count == 0 and not cfg["sources"].get(name, {}).get("allow_empty"))]
+    if failed:
+        print(f"[다시 보기] 수집 확인 필요: {', '.join(failed)}")
+        if args.send:
+            raise SystemExit("공고를 일부만 확인해 재발송을 중단했습니다.")
+
+    min_score = LEVELS.get(prof.get("min_level", "확인"), 1)
+    rows = [(n, v) for n, v in evaluate(notices, prof, today)
+            if v.score >= min_score and not state.is_done(n.key)]
+    rows.sort(key=lambda row: _schedule_key(*row, today))
+    if not rows:
+        print("[다시 보기] 현재 맞춤 공고 없음")
+        return
+    cards = [(n.key, discord.embed(n, v, today)) for n, v in rows]
+    delivered = discord.send_notices(cfg, state, f"📋 지금 확인할 맞춤 공고 {len(rows)}건", cards,
+                                     dry_run=not args.send, confirm=args.send)
+    if args.send:
+        for n, _ in rows:
+            state.mark_seen(n.key, today)
+            if n.end == today:
+                state.mark_reminded(n.key, f"end_today:{today.isoformat()}")
+        state.save(today)
+        print(f"[재발송] 공고 {len(rows)}건 · Discord 메시지 {len(delivered)}개 확인")
 
 
 def cmd_test(args):  # noqa: ARG001
@@ -169,6 +234,8 @@ def main():
     r = sub.add_parser("run", help="수집·판정·알림")
     r.add_argument("--dry-run", action="store_true")
     sub.add_parser("preview", help="진행 중 공고와 판정 이유 보기")
+    replay = sub.add_parser("replay", help="현재 맞춤 공고 다시 보기")
+    replay.add_argument("--send", action="store_true", help="디스코드로 재발송")
     sub.add_parser("test-discord", help="웹훅 테스트")
     args = ap.parse_args()
     if args.cmd == "setup":
@@ -181,6 +248,8 @@ def main():
         cmd_run(args)
     elif args.cmd == "preview":
         cmd_preview(args)
+    elif args.cmd == "replay":
+        cmd_replay(args)
     else:
         cmd_test(args)
 

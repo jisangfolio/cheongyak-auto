@@ -9,12 +9,13 @@ fixtures/youth.json    : 같은 목록의 bbsListJson.json 응답 형태 (페이
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from cheong import discord
 from cheong.eligibility import judge
 from cheong.main import evaluate, plan
+from cheong.models import Notice
 from cheong.profile import DEFAULT, age
 from cheong.sources import applyhome, lh, sh, youth
 from cheong.state import State
@@ -171,8 +172,7 @@ class PlanTest(unittest.TestCase):
             tomorrow = date(2026, 10, 14)
             new2, rem2 = plan(evaluate(sample(), ME, tomorrow), ME, st2, tomorrow)
             self.assertEqual(new2, [])
-            heads = {n.title[:6]: h for n, _, h in rem2}
-            self.assertTrue(any("오늘 접수 시작" in h for h in heads.values()))
+            self.assertTrue(any(n.begin == tomorrow and kind == "begin" for n, _, kind in rem2))
             # 같은 리마인더는 두 번 안 보낸다
             _, rem3 = plan(evaluate(sample(), ME, tomorrow), ME, st2, tomorrow)
             self.assertEqual(rem3, [])
@@ -182,6 +182,45 @@ class PlanTest(unittest.TestCase):
         e = discord.embed(n, judge(n, ME, TODAY))
         self.assertLessEqual(len(e["title"]), 256)
         json.dumps(e)
+
+    def test_new_alerts_order_by_schedule_urgency(self):
+        deadlines = {"오늘": (TODAY, TODAY), "내일": (None, TODAY + timedelta(days=1)),
+                     "진행 중": (TODAY - timedelta(days=1), TODAY + timedelta(days=7)),
+                     "예정": (TODAY + timedelta(days=2), TODAY + timedelta(days=4)), "미정": (None, None)}
+        verdict = judge(sample()[-2], ME, TODAY)
+        rows = [(Notice("LH", name, name, begin=begin, end=end), verdict)
+                for name, (begin, end) in reversed(deadlines.items())]
+        with tempfile.TemporaryDirectory() as d:
+            new, _ = plan(rows, ME, State(Path(d) / "s.json"), TODAY)
+        self.assertEqual([n.title for n, _ in new], list(deadlines))
+
+    def test_deadline_day_after_start_reminder_and_new_alert_dedup(self):
+        verdict = judge(sample()[-2], ME, TODAY)
+        earlier = Notice("LH", "existing", "기존 공고", begin=TODAY - timedelta(days=1), end=TODAY)
+        new_notice = Notice("LH", "new", "신규 공고", begin=TODAY, end=TODAY)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "s.json"
+            state = State(path)
+            state.mark_seen(earlier.key, earlier.begin)
+            state.mark_reminded(earlier.key, "begin")
+            rows = [(earlier, verdict), (new_notice, verdict)]
+            new, remind = plan(rows, ME, state, TODAY)
+            self.assertEqual([n.key for n, _ in new], [new_notice.key])
+            self.assertEqual([(n.key, kind) for n, _, kind in remind], [(earlier.key, "end")])
+            state.save(TODAY)
+            self.assertEqual(plan(rows, ME, State(path), TODAY), ([], []))
+
+    def test_embed_schedule_first(self):
+        n = sample()[-2]
+        verdict = judge(n, ME, TODAY)
+        for today, expected in (
+                (TODAY, "**10월 14일(수) 접수 시작 · D-1**\n마감 10월 16일(금)"),
+                (date(2026, 10, 15), "**접수 중 · 마감 10월 16일(금) · D-1**"),
+                (date(2026, 10, 16), "**오늘 마감 · 10월 16일(금)**")):
+            with self.subTest(today=today):
+                self.assertTrue(discord.embed(n, verdict, today)["description"].startswith(expected))
+        unknown = Notice("SH", "unknown", "일정 미정 공고")
+        self.assertTrue(discord.embed(unknown, verdict, TODAY)["description"].startswith("**접수 일정 확인 필요**"))
 
 
 if __name__ == "__main__":

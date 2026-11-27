@@ -26,8 +26,10 @@ jobs:
       APPLYHOME_KEY: ${{ secrets.APPLYHOME_KEY }}
       LH_KEY: ${{ secrets.LH_KEY }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+      DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
       PROFILE_JSON: ${{ secrets.PROFILE_JSON }}
-      CHEONG_SKIP: lh          # LH(apis.data.go.kr)는 해외 IP 차단 → Mac launchd 가 맡음 (scripts/)
+      CHEONG_LH_PUBLIC_ONLY: "1"  # 서울주거포털 대체 목록. LH API는 Mac에서 조회
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

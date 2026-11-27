@@ -8,6 +8,7 @@
   무순위      getRemndrLttotPblancDetail        무순위·잔여세대(줍줍)
   오피스텔등   getUrbtyOfctlLttotPblancDetail    오피스텔·도시형생활주택·민간임대
   공공지원임대 getPblPvtRentLttotPblancDetail    공공지원 민간임대
+  임의공급    getOPTLttotPblancDetail           APT 임의공급
 """
 from datetime import timedelta
 
@@ -20,6 +21,7 @@ KINDS = {
     "remndr": ("getRemndrLttotPblancDetail", "무순위/잔여"),
     "urbty": ("getUrbtyOfctlLttotPblancDetail", "오피스텔/도시형/민간임대"),
     "pvtrent": ("getPblPvtRentLttotPblancDetail", "공공지원민간임대"),
+    "opt": ("getOPTLttotPblancDetail", "임의공급"),
 }
 
 
@@ -53,6 +55,7 @@ def to_notice(it, kind_label):
         announce=parse_date(_first(it, "PRZWNER_PRESNATN_DE")),
         households=_first(it, "TOT_SUPLY_HSHLDCO", "SUPLY_HSHLDCO"),
         url=_first(it, "PBLANC_URL", "HMPG_ADRES"),
+        extra={"search_house_secd": _first(it, "SEARCH_HOUSE_SECD")},
     )
 
 
@@ -66,16 +69,22 @@ def _fetch_kind(op, key, since, per_page=300, max_pages=10):
             params["cond[RCRIT_PBLANC_DE::GTE]"] = since.isoformat()
         try:
             body = get(url, params, label=f"청약홈:{op}").json()
-        except Exception:
+        except Exception as e:
             if use_cond and page == 1:      # 조건 파라미터를 거부하면 조건 없이 재시도
                 use_cond = False
                 continue
-            raise
+            if not items:
+                raise
+            print(f"[청약홈] {op} p{page} 조회 실패: {e}")
+            break
         data = body.get("data") or []
         items.extend(data)
-        if not data or page * per_page >= int(body.get("totalCount") or 0):
+        count = body.get("matchCount", body.get("totalCount"))
+        if not data or (count is not None and len(items) >= int(count)):
             break
         page += 1
+    else:
+        print(f"[청약홈] {op} 페이지 제한 도달({max_pages}쪽) · 조회 범위 확인")
     return items
 
 

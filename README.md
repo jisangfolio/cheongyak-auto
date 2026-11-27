@@ -10,10 +10,12 @@
 
 | 수집처 | 내용 | 방식 |
 |---|---|---|
-| 청약홈 | 민영·공공 APT, 무순위(줍줍), 오피스텔·민간임대, 공공지원 민간임대 | 공식 오픈API |
-| LH | 임대주택, 주거복지(매입임대·전세임대·든든전세) | 공식 오픈API (목록+상세) |
-| SH | 공공임대·공공분양 | 서울주거포털 목록 |
+| 청약홈 | 민영·공공 APT, 무순위·잔여·임의공급, 오피스텔·민간임대, 공공지원 민간임대 | 공식 오픈API |
+| LH | 임대주택, 주거복지(매입임대·전세임대·든든전세), 서울 공공분양·신혼희망타운 | 임대·주거복지 공식 API 및 서울주거포털 |
+| SH | 공공임대·공공분양 | 서울주거포털 목록·상세 및 SH 홈페이지 공고 |
 | 청년안심주택 | 공공·민간 청년안심주택 | 서울시 모집공고 게시판 |
+| HUG | 서울 든든전세 모집 회차 | 안심전세포털 |
+| 서울 사회주택 | 공실로 표시된 주택 | 서울시 사회주택 플랫폼. 현재 공실·신청 방법은 운영사 확인 |
 
 ## 판정 (추천 / 확인 / 제외)
 
@@ -38,8 +40,8 @@
 ## 알림 종류
 
 - 📋 첫 실행: 지금 진행 중인 맞춤 공고 요약
-- 🆕 새 맞춤 공고
-- ⏰ 리마인더: 접수 시작 / 마감 N일 전 (같은 공고에 한 번씩, 짧은 접수는 한 번만)
+- 🆕 새 맞춤 공고: 카드 첫 줄에 요일·D-day를 표시하고 오늘·내일 마감 공고부터 정렬
+- ⏰ 리마인더: 접수 시작 / 마감 N일 전 / 마감 당일 (짧은 접수는 사전 마감 알림 생략 가능, 당일 신규 카드가 있으면 별도 당일 알림 생략)
 - ⚠️ 어떤 수집처가 3회 연속 0건이면 경고, ❌ 실행 실패 시 링크
 
 ## 설정 (처음 한 번, 15분)
@@ -68,17 +70,20 @@ python -m cheong setup        # 대화형 설문 → profile.json + Secret용 �
 | 이름 | 값 |
 |---|---|
 | `DISCORD_WEBHOOK_URL` | 1)의 웹훅 URL |
+| `DISCORD_BOT_TOKEN` | (선택) ✅ 완료 기능용 봇 토큰 |
+| `DISCORD_USER_ID` | (선택) ✅ 완료를 처리할 본인 디스코드 사용자 ID |
 | `PROFILE_JSON` | 3)에서 출력된 한 줄 JSON |
 | `APPLYHOME_KEY` | 2)의 인증키(Decoding) |
 | `LH_KEY` | (선택) 다른 키를 쓸 때만 |
 
 ### 5) 첫 실행
 Actions → **청약 알리미** → Run workflow → `dry_run` 체크 → 로그 확인 → 이상 없으면 체크 해제하고 다시 실행.
-이후는 매일 자동. 알림 이력은 `state/state.json` 으로 커밋된다(공고 id·날짜만, 개인정보 없음).
+이후는 매일 자동. 알림 이력은 `state/state.json` 으로 커밋된다. ✅ 완료 기능을 켜면 이 파일에
+완료 공고 ID 및 완료 확인에 필요한 디스코드 메시지·채널 ID도 기록된다.
 
 ### 6) LH 는 Mac 에서 (선택)
-GitHub Actions 는 해외 IP 라 LH API(`apis.data.go.kr`)가 접속 시간 초과로 막힌다.
-그래서 Actions 는 `CHEONG_SKIP=lh` 로 LH 를 빼고, LH 는 Mac 의 launchd 가 매일 09:07·18:07 에 돌린다.
+GitHub Actions는 `CHEONG_LH_PUBLIC_ONLY=1`로 서울주거포털에서 LH 서울 임대·분양 공고를 확인한다.
+LH API(`apis.data.go.kr`)의 임대·주거복지 전체 조회는 Mac의 launchd가 매일 09:07·18:07에 돌린다.
 ```bash
 bash scripts/install-mac.sh            # 한 번만 (로그: ~/.cheongyak-auto/logs/mac-run.log)
 ```
@@ -88,11 +93,25 @@ clone 하고 `.env`·`profile.json` 을 복사해 거기서 돌린다(실행 때
 양쪽 기록을 합친다(중복 알림 없음). Mac 이 꺼져 있던 시간은 깨어날 때 한 번 돈다.
 수집처 고르기: `CHEONG_ONLY=lh` (이것만) / `CHEONG_SKIP=lh,sh` (이것 빼고).
 
+### 디스코드에서 ✅로 완료 처리 (선택)
+
+1. [Discord Developer Portal](https://discord.com/developers/applications)에서 봇을 만든 뒤 알림 서버에 설치한다.
+   알림 채널에서 봇에게 **채널 보기**와 **메시지 기록 읽기** 권한을 준다.
+2. 봇 토큰은 `DISCORD_BOT_TOKEN`에, [본인 사용자 ID](https://support.discord.com/hc/en-us/articles/206346498-Where-can-I-find-my-User-Server-Message-ID)는
+   `DISCORD_USER_ID`에 넣는다. GitHub Actions는 저장소 Secrets에 추가하고, LH도 쓰는 경우 Mac의 `.env`에
+   같은 값을 넣고 설치 스크립트를 다시 실행한다.
+3. 설정 후부터 공고마다 메시지가 따로 온다. 완료한 공고 메시지에 일반 ✅ 반응을 남기면 다음 예약 실행이
+   본인의 반응을 확인하고 그 공고를 이후 알림에서 제외한다. 완료 상태는 저장되므로 반응을 나중에 떼어도 유지된다.
+
+기능을 켜기 전에 받은 메시지는 완료 확인 대상에 포함되지 않는다. 두 설정값을 모두 입력하면 기능이 켜진다.
+
 ## 로컬에서 쓰기
 `.env` 파일에 위 값들을 `KEY=값` 으로 넣고:
 ```bash
 python -m cheong test-discord   # 웹훅 테스트
 python -m cheong preview        # 진행 중 공고 + 판정 이유(제외 포함) 보기
+python -m cheong replay         # 기존 발송 여부와 무관하게 지금 맞춤 공고를 로그에서 확인
+python -m cheong replay --send  # 현재 맞춤 공고를 디스코드로 재발송
 python -m cheong run --dry-run  # 보내지 않고 출력만
 python -m cheong run            # 실제 알림
 python -m unittest discover -s tests -t .   # 테스트(네트워크 불필요)
@@ -101,10 +120,12 @@ python -m unittest discover -s tests -t .   # 테스트(네트워크 불필요)
 ## 구조
 ```
 cheong/
-  sources/applyhome.py  청약홈 4개 엔드포인트
+  sources/applyhome.py  청약홈 5개 공고 엔드포인트
   sources/lh.py         LH 목록 + 상세(접수일·발표일·주소)
   sources/sh.py         서울주거포털 SH 임대·분양 표 + SH 홈페이지 공고 게시판(사회주택 등)
   sources/youth.py      청년안심주택 게시판(JSON) — 본문에서 마감일까지
+  sources/hug.py        HUG 서울 든든전세 모집 회차
+  sources/social.py     서울시 사회주택 플랫폼 공실
   profile.py            설문 / 프로필 로드(PROFILE_JSON → profile.json)
   eligibility.py        추천·확인·제외 판정 규칙
   discord.py            웹훅 임베드
@@ -117,10 +138,10 @@ scripts/                Mac launchd (LH 담당) 설치·실행
 ```
 
 ## 한계
-- SH 목록엔 접수기간이 없어 게시일·발표일만 쓴다(접수일 리마인더 없음). 게시 21일 뒤엔 종료로 본다.
+- SH는 서울주거포털 상세 본문에서 날짜를 읽을 수 있는 경우 리마인더를 보낸다. 첨부파일이나 운영사 안내에만 접수 일정이 있으면 공고문을 확인해야 한다.
 - 소득·자산 세부 기준은 공고문 PDF 안에 있어 자동 판정하지 않는다.
-- LH 는 해외 IP 차단으로 Actions 에서 못 읽는다 → Mac 이 꺼져 있으면 그동안 LH 알림이 늦어진다.
-- SH·청년안심은 HTML 파싱이라 사이트 개편 시 깨질 수 있다 → 0건 경고로 알 수 있다.
+- 서울주거포털의 LH 목록은 서울 물량을 보강한다. Mac이 꺼져 있으면 LH API의 전국 단위 공고나 상세 정보 반영은 늦을 수 있다.
+- 자치구·운영사 단독 공고는 직접 조회하지 않는다. 게시판 구조 변경이나 특정 하위 목록의 조회 실패도 누락을 일으킬 수 있다.
 
 ## License
 MIT

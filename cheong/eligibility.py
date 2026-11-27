@@ -15,6 +15,9 @@ LEVELS = {"추천": 2, "확인": 1, "제외": 0, "무시": -1}
 # 모집이 아닌 후속 안내(결과·서류·계약)는 알림 대상이 아니다
 NOISE = re.compile(r"당첨자|서류심사|서류제출|계약\s*(체결|안내|일정)|결과\s*(발표|안내|공고)|순번|합격자|명단|동호수|정산")
 RECRUIT = re.compile(r"모집|청약\s*접수|접수\s*안내|입주자\s*선정|공급")
+YOUTH_TARGET = re.compile(r"청년(?!\s*(?:창업가|예술인|장애인))")
+APPLYHOME_TYPES = {"0201": "오피스텔", "0202": "오피스텔", "0203": "민간임대", "0303": "민간임대"}
+APPLYHOME_MIXED_CATEGORY = "오피스텔/도시형/민간임대"
 
 
 @dataclass
@@ -37,14 +40,22 @@ def _has(t, *words):
 def kind_of(n: Notice) -> str:
     t = n.text
     if n.source == "청약홈":
-        if _has(t, "오피스텔", "도시형"):
-            return "오피스텔"
+        api_kind = APPLYHOME_TYPES.get(n.extra.get("search_house_secd"))
+        if api_kind:
+            return api_kind
+        if n.category.startswith(APPLYHOME_MIXED_CATEGORY):
+            details = n.category.removeprefix(APPLYHOME_MIXED_CATEGORY).strip()
+            # 종류 하나를 뜻하는 상세구분명만 사용하고 상위 묶음명은 제목으로 보완한다.
+            type_text = details if details and "/" not in details else n.title
+            return "민간임대" if "민간임대" in type_text else "오피스텔"
         if _has(t, "민간임대"):
             return "민간임대"
+        if _has(t, "오피스텔", "도시형"):
+            return "오피스텔"
         if _has(t, "국민", "공공", "신혼희망", "뉴:홈", "뉴홈"):
             return "공공분양"
         return "민영분양"
-    if n.source == "SH" and n.extra.get("board") == "publicSale":
+    if n.source == "SH" and (n.extra.get("board") == "publicSale" or n.category == "주택분양"):
         return "공공분양"
     if n.source == "LH" and _has(t, "분양") and not _has(t, "임대"):
         return "공공분양"
@@ -117,30 +128,30 @@ def judge(n: Notice, p: dict, today) -> Verdict:
     if not p.get("homeless", True) and kind not in ("오피스텔", "민간임대"):
         return out("유주택자는 대부분 지원 불가")
 
-    # 3) 대상 계층이 정해진 공고
-    if _has(t, "신혼", "신생아", "미리내집", "예비신혼"):
-        if not newly:
-            return out("신혼·신생아·예비신혼·한부모 대상")
+    # 3) 여러 모집 대상이 섞이면 공고문에서 지원할 공급 구분을 확인한다.
+    newly_target = _has(t, "신혼", "신생아", "미리내집", "예비신혼")
+    youth_target = bool(YOUTH_TARGET.search(t))
+    youth_ok = a is not None and 19 <= a <= 39
+    audience = (
+        (newly_target, newly, "신혼·신생아·예비신혼·한부모 대상"),
+        (_has(t, "고령자", "어르신", "은빛", "노인", "실버"), a is not None and a >= 65, "만 65세 이상 고령자 대상"),
+        (_has(t, "장애인"), p.get("disabled"), "장애인 대상"),
+        (_has(t, "영구임대", "수급자", "주거취약", "쪽방", "비주택"), p.get("low_income"), "수급자·저소득 취약계층 대상"),
+        (_has(t, "예술인", "창업가"), p.get("artist_or_startup"), "예술인·청년창업가 대상"),
+        (_has(t, "다자녀", "다둥이"), int(p.get("children") or 0) >= 2, "다자녀 대상"),
+        (_has(t, "대학생", "희망하우징", "공공기숙사"), p.get("student"), "대학생 대상"),
+        (youth_target, a is None or youth_ok, "만 19~39세 청년 대상"),
+    )
+    unmet = [reason for mentioned, eligible, reason in audience if mentioned and not eligible]
+    if unmet:
+        if not any(mentioned and eligible for mentioned, eligible, _ in audience):
+            return out(unmet[0])
+        v.reasons.append("여러 모집 대상이 표시됨 · 지원 가능한 공급 구분은 공고문 확인")
+        return v
+    if newly_target:
         v.level = "추천"
         v.reasons.append("신혼·신생아 대상에 해당")
-    if _has(t, "고령자", "어르신", "은빛", "노인", "실버"):
-        if a is None or a < 65:
-            return out("만 65세 이상 고령자 대상")
-    if _has(t, "장애인") and not p.get("disabled"):
-        return out("장애인 대상")
-    if _has(t, "영구임대", "수급자", "주거취약", "쪽방", "비주택") and not p.get("low_income"):
-        return out("수급자·저소득 취약계층 대상")
-    if _has(t, "예술인", "창업가") and not p.get("artist_or_startup"):
-        return out("예술인·청년창업가 대상")
-    if _has(t, "다자녀", "다둥이") and int(p.get("children") or 0) < 2:
-        return out("다자녀 대상")
-    if _has(t, "대학생", "희망하우징", "공공기숙사") and not _has(t, "청년") and not p.get("student"):
-        return out("대학생 대상")
-
-    youth_ok = a is not None and 19 <= a <= 39
-    if _has(t, "청년"):
-        if a is not None and not youth_ok:
-            return out("만 19~39세 청년 대상")
+    if youth_target:
         v.level = "추천"
         v.reasons.append("청년 대상" + (f"(만 {a}세)" if a is not None else ""))
 

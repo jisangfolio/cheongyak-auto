@@ -2,6 +2,7 @@
 import re
 import time
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 import requests
 
@@ -31,6 +32,13 @@ def parse_date(s):
         return None
 
 
+def safe_http_error(error, url):
+    """인증정보가 섞일 수 있는 원본 예외 대신 진단용 종류·호스트·상태만 남긴다."""
+    host = urlsplit(url).hostname or "HTTP endpoint"
+    status = f" HTTP {error.response.status_code}" if error.response is not None else ""
+    return requests.exceptions.RequestException(f"{type(error).__name__}: {host}{status}")
+
+
 def _request(method, url, params=None, data=None, timeout=30, retries=3, backoff=3, label="http"):
     """재시도 HTTP. 공공데이터포털은 일시적 5xx·타임아웃이 잦다."""
     last = None
@@ -41,11 +49,13 @@ def _request(method, url, params=None, data=None, timeout=30, retries=3, backoff
             r.raise_for_status()
             return r
         except requests.exceptions.RequestException as e:
-            last = e
+            # requests 예외 문자열은 URL 쿼리(API 키)·인증정보를 포함할 수 있다.
+            # 재시도 로그뿐 아니라 호출자의 오류 로그/traceback도 안전하게 만든다.
+            last = safe_http_error(e, url)
             if attempt < retries:
-                print(f"[{label}] 재시도 {attempt}/{retries}: {e}")
+                print(f"[{label}] 재시도 {attempt}/{retries}: {last}")
                 time.sleep(backoff * attempt)
-    raise last
+    raise last from None
 
 
 def get(url, params=None, timeout=30, retries=3, backoff=3, label="http"):

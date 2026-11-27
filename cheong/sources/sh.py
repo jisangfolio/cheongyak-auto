@@ -4,7 +4,7 @@ SH는 공식 공고 API가 없다. 서울주거포털(housing.seoul.go.kr)이 SH
 표로 정리해 주므로 그걸 파싱한다. 열 순서가 페이지마다 달라 '열 이름'으로 매핑한다.
   임대: 번호 | 청약유형 | 공고명 | 공고게시일 | 발표일 | 모집상태 | 담당부서 | 링크
   분양: 번호 | 청약유형 | 공고명 | 공고게시일 | 발표일 | 담당부서 | 링크
-목록에는 접수기간이 없다(공고문 안에 있음) → 게시일·발표일·상태만 쓴다.
+목록에는 접수기간이 없어 서울주거포털 상세 본문에서 확인한다.
 
 서울주거포털에 안 올라오는 공고(사회주택 등)가 있어서 SH 홈페이지 '공고 및 공지'
 게시판(i-sh.co.kr m_241)의 주택임대·주택분양 분류도 읽는다. 글번호(seq)가 포털과 같아
@@ -13,8 +13,11 @@ SH는 공식 공고 API가 없다. 서울주거포털(housing.seoul.go.kr)이 SH
   표: 번호 | 제목(onclick getDetailView('seq')) | 담당부서 | 등록일 | 조회수
 """
 import re
+from datetime import date
+from html import unescape
+from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 
 from ..models import Notice
 from ..util import get, parse_date, post
@@ -25,6 +28,18 @@ PAGES = {
 }
 COLS = {"청약유형": "category", "공고명": "title", "공고게시일": "posted",
         "발표일": "announce", "모집상태": "status"}
+_DETAIL_HREF = re.compile(r'href="(/site/main/sh/(?:publicLease|publicSale)/view\?[^"]+)"')
+_DATE = r"(?:(20\d{2})[.년/-]\s*)?(\d{1,2})[.월/-]\s*(\d{1,2})(?:\s*[.일])?"
+_RANGE = re.compile(_DATE + r"[^~∼～\n]{0,40}[~∼～]\s*" + _DATE)
+_RECEPTION = re.compile(r"^\s*[■□○●•※\d.()\s]*(?:(?:인터넷|온라인)\s+)?"
+                        r"(?:청약\s*접수|접수|신청)\s*(?:기간|일시|일정|일)?\s*[:：]")
+
+
+def _portal_detail(row, board):
+    urls = [a["href"] for a in row.select('a[href*="/site/main/sh/"][href*="/view"]')]
+    for comment in row.find_all(string=lambda s: isinstance(s, Comment)):
+        urls.extend(_DETAIL_HREF.findall(str(comment)))
+    return urljoin(PAGES[board], unescape(urls[0])) if urls else ""
 
 
 def parse_list(html, board):
@@ -48,7 +63,7 @@ def parse_list(html, board):
             category=row.get("category", ""), region="서울",
             posted=parse_date(row.get("posted")), announce=parse_date(row.get("announce")),
             status=row.get("status", ""), url=url,
-            extra={"board": board},
+            extra={"board": board, "detail": _portal_detail(tr, board)},
         ))
     return out
 
@@ -56,7 +71,9 @@ def parse_list(html, board):
 BOARD = "https://www.i-sh.co.kr/main/lay2/program/S1T294C295/www/brd/m_241/"
 BOARD_KINDS = {"2": "주택임대", "1": "주택분양"}
 # 모집 공고가 아닌 후속 안내(발표·계약·점검 등)는 뺀다
-_SKIP = ("발표", "결과", "계약", "사전점검", "주택공개", "안내문", "등기", "동호", "서류제출")
+_RECRUIT = re.compile(r"모집|(?:청약\s*)?접수\s*안내|추가\s*공급")
+_FOLLOWUP = re.compile(r"(?:당첨자(?:\s*및\s*예비자)?|예비순번|결과)\s*(?:발표|명단|안내)|계약\s*(?:일정|안내|체결)|"
+                       r"서류\s*제출|사전\s*점검|주택\s*공개|동호수?\s*추첨")
 
 
 def parse_board(html, kind):
@@ -76,7 +93,8 @@ def parse_board(html, kind):
             for sp in tds[ti].select(".icoNew"):
                 sp.decompose()
             title = tds[ti].get_text(" ", strip=True)
-            if "모집" not in title or any(k in title for k in _SKIP):
+            followup = _FOLLOWUP.search(title)
+            if not _RECRUIT.search(title if not followup else title[followup.end():]):
                 continue
             out.append(Notice(
                 source="SH", uid=m.group(1), title=title,
@@ -88,7 +106,51 @@ def parse_board(html, kind):
     return out
 
 
-def fetch(cfg, today):  # noqa: ARG001
+def parse_reception(html, notice):
+    soup = BeautifulSoup(html, "html.parser")
+    detail = soup.select_one(".board-detail")
+    title = detail.select_one("td.tlt") if detail else None
+    # 포털 내부 글번호는 목록과 상세가 어긋날 수 있어 제목부터 대조한다.
+    if not title or "".join(title.get_text().split()) != "".join(notice.title.split()):
+        return None
+    periods = set()
+    for p in detail.select("p, li, td"):
+        line = p.get_text(" ", strip=True)
+        if p.find(["p", "li", "td"]) or not _RECEPTION.match(line):
+            continue
+        match = _RANGE.search(line)
+        if not match:
+            continue
+        y1, m1, d1, y2, m2, d2 = (int(part) if part else None for part in match.groups())
+        y1 = y1 or (notice.posted.year if notice.posted else None)
+        if not y1:
+            continue
+        y2 = y2 or (y1 + (m2 < m1))
+        try:
+            begin, end = date(y1, m1, d1), date(y2, m2, d2)
+        except ValueError:
+            continue
+        if begin <= end:
+            periods.add((begin, end))
+    return next(iter(periods)) if len(periods) == 1 else None
+
+
+def _load_reception(n, today):
+    if not n.extra.get("detail") or (n.announce and n.announce < today):
+        return
+    if any(word in n.status for word in ("마감", "완료", "종료")):
+        return
+    try:
+        html = get(n.extra["detail"], timeout=8, retries=1, label="SH상세").text
+    except Exception as e:  # noqa: BLE001
+        print(f"[SH] 상세 실패 {n.uid}: {e}")
+        return
+    period = parse_reception(html, n)
+    if period:
+        n.begin, n.end = period
+
+
+def fetch(cfg, today):
     pages = int(cfg["sources"]["sh"].get("pages", 2))
     out, seen = [], set()
     for board, url in PAGES.items():
@@ -116,4 +178,6 @@ def fetch(cfg, today):  # noqa: ARG001
                 if n.uid not in seen:
                     seen.add(n.uid)
                     out.append(n)
+    for n in out:
+        _load_reception(n, today)
     return out
