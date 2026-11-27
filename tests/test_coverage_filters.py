@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 from cheong.eligibility import judge, kind_of
 from cheong.models import Notice
 from cheong.profile import DEFAULT
-from cheong.sources import applyhome
+from cheong.sources import applyhome, social
 
 
 TODAY = date(2026, 11, 27)
@@ -13,13 +13,15 @@ PROFILE = {**DEFAULT, "birth": "2000-06-01"}
 
 
 class AudienceCoverageTest(TestCase):
-    def test_social_housing_is_ignored_across_feeds(self):
+    def test_social_housing_requires_verified_independent_layout(self):
         for notice in (
-            Notice("사회주택", "1", "홍시주택"),
             Notice("SH", "2", "[토지임대부 사회주택] 옥류서원 입주자 모집"),
             Notice("SH", "3", "예비입주자 모집", category="사회적주택"),
         ):
             self.assertEqual(judge(notice, PROFILE, TODAY).level, "무시")
+        verified = social.to_notice({"homeCode": "1", "homeName": "홍시주택", "statusCnt": 1,
+                                     "houseType": "원룸(오픈형)", "homeDetail": "개별 주방과 화장실이 포함된 원룸"})
+        self.assertEqual(judge(verified, PROFILE, TODAY).level, "확인")
 
     def test_eligible_audience_is_kept_when_another_audience_does_not_match(self):
         titles = (

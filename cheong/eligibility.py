@@ -96,8 +96,8 @@ def account_need(n: Notice, kind: str) -> str:
 def judge(n: Notice, p: dict, today) -> Verdict:
     t = n.text
     kind = kind_of(n)
-    if n.source == "사회주택" or _has(t, "사회주택", "사회적주택"):
-        return Verdict("무시", kind, ["사회주택 알림 제외"])
+    if n.source != "사회주택" and _has(t, "사회주택", "사회적주택"):
+        return Verdict("무시", kind, ["사회주택 개별 주방·화장실 확인 불가"])
     a = calc_age(p, today)
     marital = p.get("marital", "미혼")
     single = marital == "미혼"
