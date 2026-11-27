@@ -205,7 +205,7 @@ def cmd_replay(args):
 
     min_score = LEVELS.get(prof.get("min_level", "확인"), 1)
     rows = [(n, v) for n, v in evaluate(notices, prof, today)
-            if v.score >= min_score and not state.is_done(n.key)]
+            if v.level != "무시" and v.score >= min_score and not state.is_done(n.key)]
     rows.sort(key=lambda row: _schedule_key(*row, today))
     if not rows:
         print("[다시 보기] 현재 맞춤 공고 없음")

@@ -96,6 +96,8 @@ def account_need(n: Notice, kind: str) -> str:
 def judge(n: Notice, p: dict, today) -> Verdict:
     t = n.text
     kind = kind_of(n)
+    if n.source == "사회주택" or _has(t, "사회주택", "사회적주택"):
+        return Verdict("무시", kind, ["사회주택 알림 제외"])
     a = calc_age(p, today)
     marital = p.get("marital", "미혼")
     single = marital == "미혼"
@@ -175,8 +177,6 @@ def judge(n: Notice, p: dict, today) -> Verdict:
             v.reasons.append("재개발임대: 철거세입자 우선, 일반은 저소득 위주")
         elif _has(t, "매입임대", "전세임대") and not v.reasons:
             v.reasons.append("일반 매입·전세임대는 수급자·저소득 우선 — 순위 확인")
-        elif _has(t, "사회주택"):
-            v.reasons.append("사회주택(SH 토지지원·토지임대부): 무주택 + 소득·자산 기준, 청년·1인 가구 물량 많음 — 공고문 확인")
         elif n.source == "청년안심":
             v.level = "추천"
         if not v.reasons:

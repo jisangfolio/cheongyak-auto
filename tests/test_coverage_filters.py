@@ -13,6 +13,14 @@ PROFILE = {**DEFAULT, "birth": "2000-06-01"}
 
 
 class AudienceCoverageTest(TestCase):
+    def test_social_housing_is_ignored_across_feeds(self):
+        for notice in (
+            Notice("사회주택", "1", "홍시주택"),
+            Notice("SH", "2", "[토지임대부 사회주택] 옥류서원 입주자 모집"),
+            Notice("SH", "3", "예비입주자 모집", category="사회적주택"),
+        ):
+            self.assertEqual(judge(notice, PROFILE, TODAY).level, "무시")
+
     def test_eligible_audience_is_kept_when_another_audience_does_not_match(self):
         titles = (
             "2026년 마포구 신혼부부,청년(수요자맞춤형)주택 잔여세대 입주자 모집 공고",
