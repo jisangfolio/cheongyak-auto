@@ -74,16 +74,19 @@ class DiscordCompletionTest(unittest.TestCase):
         self.assertEqual(new, [])
         self.assertEqual([n.key for n, _, _ in reminders], [self.b.key])
 
-    def test_dry_run_and_legacy_batching(self):
+    def test_dry_run_and_one_message_per_notice_without_bot(self):
         with patch("cheong.discord.requests.post", return_value=response(None, 204)) as post, \
                 patch("cheong.discord.time.sleep"), patch("builtins.print"):
             discord.send_notices(CFG, self.state, "새 공고 2건", self.cards, dry_run=True)
             post.assert_not_called()
             self.assertEqual(self.state.tracked_messages, {})
             discord.send_notices({"webhook": WEBHOOK}, self.state, "새 공고 2건", self.cards)
-        post.assert_called_once()
-        self.assertNotIn("params", post.call_args.kwargs)
-        self.assertEqual(len(post.call_args.kwargs["json"]["embeds"]), 2)
+        self.assertEqual(post.call_count, 2)
+        for call in post.call_args_list:
+            self.assertNotIn("params", call.kwargs)
+            self.assertEqual(len(call.kwargs["json"]["embeds"]), 1)
+        self.assertEqual(post.call_args_list[0].kwargs["json"]["content"], "새 공고 2건")
+        self.assertNotIn("content", post.call_args_list[1].kwargs["json"])
         self.assertEqual(self.state.tracked_messages, {})
 
     def test_deleted_message_does_not_block_other_reactions(self):

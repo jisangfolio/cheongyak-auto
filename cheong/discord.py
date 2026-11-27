@@ -136,18 +136,18 @@ def send(webhook, content=None, embeds=None, dry_run=False, *, wait=False):
 
 
 def send_notices(cfg, state, content, notices, dry_run=False, *, confirm=False):
-    """완료 기능을 쓰면 반응 하나가 공고 하나에만 적용되도록 따로 보낸다."""
+    """공고마다 메시지를 하나씩 보내고, 완료 기능을 쓰면 메시지 ID를 저장한다."""
     webhook = cfg["webhook"]
-    if not (webhook and cfg.get("bot_token") and cfg.get("user_id")):
-        return send(webhook, content, [card for _, card in notices], dry_run, wait=confirm)
-
+    tracking = bool(webhook and cfg.get("bot_token") and cfg.get("user_id"))
     hint = "확인한 공고는 이 메시지에 ✅ 반응을 남기면 다음 알림부터 제외됩니다."
     delivered = []
     for i, (key, card) in enumerate(notices):
-        heading = f"{content}\n{hint}" if i == 0 else hint
-        for channel_id, message_id in send(webhook, heading, [card], dry_run, wait=True):
-            state.track_message(key, channel_id, message_id)
-            delivered.append((channel_id, message_id))
+        heading = "\n".join(filter(None, (content if i == 0 else None, hint if tracking else None)))
+        receipts = send(webhook, heading, [card], dry_run, wait=confirm or tracking) or []
+        if tracking:
+            for channel_id, message_id in receipts:
+                state.track_message(key, channel_id, message_id)
+        delivered.extend(receipts)
     return delivered
 
 
