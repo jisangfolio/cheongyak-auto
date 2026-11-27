@@ -146,7 +146,11 @@ def cmd_run(args):
     evaluated = evaluate(notices, prof, today)
     first = not state.initialized
     if not args.dry_run and cfg.get("bot_token") and cfg.get("user_id"):
-        if discord.sync_completions(state, cfg["bot_token"], cfg["user_id"], {n.key for n, _ in evaluated}):
+        keys = {n.key for n, _ in evaluated}
+        if cfg["lh_public_only"]:
+            # Actions의 서울 대체 목록에 없는 Mac 전용 LH 공고도 같은 봇으로 확인한다.
+            keys.update(info["key"] for info in state.tracked_messages.values() if info["key"].startswith("LH:"))
+        if discord.sync_completions(state, cfg["bot_token"], cfg["user_id"], keys):
             state.save(today)
     for src, cnt in report.items():                     # 수집처별 연속 0건 감시
         healthy = cnt is not None and (cnt > 0 or cfg["sources"].get(src, {}).get("allow_empty"))

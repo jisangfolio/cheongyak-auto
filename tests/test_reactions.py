@@ -98,6 +98,13 @@ class DiscordCompletionTest(unittest.TestCase):
                                                      {self.a.key, self.b.key}), 1)
         self.assertEqual(self.state.done, {self.b.key})
 
+    def test_mac_can_record_message_for_actions_without_bot_token(self):
+        cfg = {"webhook": WEBHOOK, "discord_track_reactions": True}
+        with patch("cheong.discord.requests.post", return_value=response({"channel_id": "1", "id": "2"})), \
+                patch("cheong.discord.time.sleep"):
+            discord.send_notices(cfg, self.state, "LH", self.cards[:1])
+        self.assertEqual(self.state.tracked_messages, {"2": {"key": self.a.key, "channel_id": "1"}})
+
     def test_unreadable_channel_does_not_block_other_channels(self):
         self.state.track_message(self.a.key, "12", "100")
         self.state.track_message(self.a.key, "12", "110")

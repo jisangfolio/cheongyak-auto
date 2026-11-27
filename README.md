@@ -98,8 +98,8 @@ clone 하고 `.env`·`profile.json` 을 복사해 거기서 돌린다(실행 때
 1. [Discord Developer Portal](https://discord.com/developers/applications)에서 봇을 만든 뒤 알림 서버에 설치한다.
    알림 채널에서 봇에게 **채널 보기**와 **메시지 기록 읽기** 권한을 준다.
 2. 봇 토큰은 `DISCORD_BOT_TOKEN`에, [본인 사용자 ID](https://support.discord.com/hc/en-us/articles/206346498-Where-can-I-find-my-User-Server-Message-ID)는
-   `DISCORD_USER_ID`에 넣는다. GitHub Actions는 저장소 Secrets에 추가하고, LH도 쓰는 경우 Mac의 `.env`에
-   같은 값을 넣고 설치 스크립트를 다시 실행한다.
+   `DISCORD_USER_ID`에 넣는다. GitHub Actions의 저장소 Secrets에 추가하면 Mac이 보낸 LH 알림의 반응도
+   Actions가 함께 확인한다. 봇 토큰은 GitHub 한 곳에만 등록하면 된다.
 3. 완료 기능을 설정한 뒤 받은 공고 메시지에 일반 ✅ 반응을 남기면 다음 예약 실행이
    본인의 반응을 확인하고 그 공고를 이후 알림에서 제외한다. 완료 상태는 저장되므로 반응을 나중에 떼어도 유지된다.
 

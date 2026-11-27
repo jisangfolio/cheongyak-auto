@@ -138,7 +138,8 @@ def send(webhook, content=None, embeds=None, dry_run=False, *, wait=False):
 def send_notices(cfg, state, content, notices, dry_run=False, *, confirm=False):
     """공고마다 메시지를 하나씩 보내고, 완료 기능을 쓰면 메시지 ID를 저장한다."""
     webhook = cfg["webhook"]
-    tracking = bool(webhook and cfg.get("bot_token") and cfg.get("user_id"))
+    tracking = bool(webhook and (cfg.get("discord_track_reactions")
+                                or (cfg.get("bot_token") and cfg.get("user_id"))))
     hint = "확인한 공고는 이 메시지에 ✅ 반응을 남기면 다음 알림부터 제외됩니다."
     delivered = []
     for i, (key, card) in enumerate(notices):

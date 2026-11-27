@@ -1,5 +1,6 @@
 # 수집처 설정 (비밀값 없음 — 커밋해도 됨)
 # 비밀값은 환경변수/GitHub Secret 으로: APPLYHOME_KEY, LH_KEY, DISCORD_WEBHOOK_URL, PROFILE_JSON
+discord_track_reactions: true  # Mac이 보낸 메시지도 GitHub Actions에서 ✅ 확인
 sources:
   applyhome:
     enabled: true
